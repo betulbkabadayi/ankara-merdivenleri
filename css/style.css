@@ -168,6 +168,8 @@ label small, .label small { font-weight: 400; }
   #btn-csv { grid-column: 1 / -1; grid-row: 2; }
   .toolbar select { width: 100%; min-width: 0; padding: 5px 6px; }
   .banner { padding: 6px 12px; font-size: 12px; }
+  /* iOS/Android: 16px altındaki yazı boyutu, kutuya dokununca sayfayı otomatik yakınlaştırır */
+  input, select, textarea { font-size: 16px; }
   .btn { min-height: 44px; }
   .btn.small { min-height: 40px; }
   .chip { min-height: 40px; }
@@ -206,7 +208,7 @@ label small, .label small { font-weight: 400; }
   .x { width: 36px; height: 36px; }
 }
 
-@media (max-height: 480px) and (max-width: 950px) {
+@media (max-height: 480px) and (min-width: 480px) and (max-width: 950px) {
   .topbar { padding: 4px 12px; padding-top: max(4px, env(safe-area-inset-top)); }
   .topbar .btn { min-height: 36px; padding: 6px 12px; }
   .brand h1 { font-size: 15px; }
@@ -221,4 +223,9 @@ label small, .label small { font-weight: 400; }
   .tab { min-height: 36px; padding: 6px; }
   .foot { padding: 4px 14px; padding-bottom: max(4px, env(safe-area-inset-bottom)); }
   .banner { padding: 3px 12px; }
+}
+
+/* Dokunmatik cihazlar (yatay büyük telefonlar dahil): 16px altı yazı iOS'ta otomatik yakınlaştırır */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px; }
 }
