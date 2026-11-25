@@ -1,4 +1,4 @@
-import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js";
+import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=3";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
