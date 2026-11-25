@@ -93,22 +93,37 @@ const remote = {
       p_notes: d.notes || null, p_status: d.status, p_max_attendees: d.max_attendees || null,
     });
   },
+  async photoPaths(filter) {
+    const rows = await this.request("/rest/v1/place_photos?select=path&" + filter);
+    return rows.map((r) => r.path);
+  },
+  // Veritabanı kaydı silindikten sonra dosyalar yetim kalır; yetim dosyaları Storage API ile sileriz (en iyi çaba).
+  async removeFiles(paths) {
+    if (!paths.length) return;
+    try {
+      await this.request("/storage/v1/object/place-photos", {
+        method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prefixes: paths }),
+      });
+    } catch (e) { console.warn("Dosya temizliği başarısız:", e.message); }
+  },
   async deletePlace(id) {
+    const paths = await this.photoPaths("place_id=eq." + id).catch(() => []);
     await this.rpc("delete_place", { p_token: identity.token(), p_id: id });
     identity.removeMine("places", id);
+    await this.removeFiles(paths);
   },
   async addPhoto(placeId, blob) {
     const path = `${placeId}/${uuid()}.jpg`;
     await this.request(`/storage/v1/object/place-photos/${path}`, {
       method: "POST", headers: { "Content-Type": blob.type || "image/jpeg", "x-upsert": "false" }, body: blob,
     });
-    try {
-      await this.rpc("add_photo", { p_token: identity.token(), p_place_id: placeId, p_path: path });
-    } catch (e) {
-      throw e;
-    }
+    await this.rpc("add_photo", { p_token: identity.token(), p_place_id: placeId, p_path: path });
   },
-  deletePhoto(photoId) { return this.rpc("delete_photo", { p_token: identity.token(), p_photo_id: photoId }); },
+  async deletePhoto(photoId) {
+    const paths = await this.photoPaths("id=eq." + photoId).catch(() => []);
+    await this.rpc("delete_photo", { p_token: identity.token(), p_photo_id: photoId });
+    await this.removeFiles(paths);
+  },
   async addAttendee(placeId, first, last, code) {
     const id = await this.rpc("add_attendee", {
       p_code: code || null, p_token: identity.token(), p_place_id: placeId, p_first: first, p_last: last,

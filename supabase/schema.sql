@@ -172,7 +172,6 @@ begin
   perform public._check_token(p_token);
   delete from public.places where id = p_id and edit_token_hash = public._hash(p_token);
   if not found then raise exception 'YETKISIZ'; end if;
-  delete from storage.objects where bucket_id = 'place-photos' and name like p_id::text || '/%';
 end $$;
 
 -- ---------------------------------------------------------------- fotoğraflar
@@ -206,7 +205,6 @@ begin
    where ph.id = p_photo_id and pl.id = ph.place_id and pl.edit_token_hash = public._hash(p_token)
   returning ph.path into v_path;
   if not found then raise exception 'YETKISIZ'; end if;
-  delete from storage.objects where bucket_id = 'place-photos' and name = v_path;
 end $$;
 
 -- ---------------------------------------------------------------- katılım (RSVP)
@@ -268,7 +266,20 @@ drop policy if exists "photos_upload" on storage.objects;
 create policy "photos_upload" on storage.objects for insert to anon, authenticated
   with check (
     bucket_id = 'place-photos'
-    and exists (select 1 from public.places where id::text = (storage.foldername(name))[1])
+    and exists (select 1 from public.places pl where pl.id::text = (storage.foldername(objects.name))[1])
+  );
+
+-- Dosya temizliği Storage API ile yapılır (SQL'den storage.objects silmek yasaktır).
+-- Listeleme/silme yalnızca hiçbir kayda bağlı olmayan (yetim) dosyalar için açıktır.
+drop policy if exists "photos_list" on storage.objects;
+create policy "photos_list" on storage.objects for select to anon, authenticated
+  using (bucket_id = 'place-photos');
+
+drop policy if exists "photos_delete_orphans" on storage.objects;
+create policy "photos_delete_orphans" on storage.objects for delete to anon, authenticated
+  using (
+    bucket_id = 'place-photos'
+    and not exists (select 1 from public.place_photos ph where ph.path = objects.name)
   );
 
 -- Davet kodunu ayarlamak için (örnek, kendi kodunuzla çalıştırın):
