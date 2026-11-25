@@ -1,4 +1,4 @@
-import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=3";
+import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=11";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -10,7 +10,7 @@ const ANKARA = { lat: 39.9208, lng: 32.8541 };
 const BOUNDS = { latMin: 39.0, latMax: 40.8, lngMin: 31.0, lngMax: 34.0 };
 const MAX_PHOTOS = 5;
 
-const state = { places: [], codeRequired: false, cat: "", q: "", status: "aktif", when: "", mine: false, view: "map", detailId: null };
+const state = { places: [], codeRequired: false, cat: "", q: "", status: "aktif", when: "", mine: false, view: "list", detailId: null };
 
 // ------------------------------------------------------------------ yardımcılar
 const pad = (n) => String(n).padStart(2, "0");
@@ -40,14 +40,18 @@ function armed(btn, label, run) {
 }
 
 // ------------------------------------------------------------------ ana harita
-let map, markerLayer;
+let map, markerLayer, mapNeedsFit = false;
 function initMap() {
   map = L.map("map", { zoomControl: true }).setView([ANKARA.lat, ANKARA.lng], 11);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(map);
   markerLayer = L.layerGroup().addTo(map);
-  new ResizeObserver(() => map.invalidateSize()).observe($("#map"));
+  new ResizeObserver(() => {
+    map.invalidateSize();
+    // Harita gizliyken (mobilde Takvim sekmesi) sığdırma yapılamaz; görünür olunca yapılır.
+    if (mapNeedsFit && $("#map").clientWidth > 0) { mapNeedsFit = false; render(true); }
+  }).observe($("#map"));
 }
 const pinIcon = (cls) => L.divIcon({ className: "pin-wrap", html: `<div class="pin ${cls}"></div>`, iconSize: [26, 26], iconAnchor: [13, 30] });
 const pinClass = (p) => (p.status === "cekildi" ? "cekildi" : p.status === "iptal" ? "iptal" : p.category === "ic_mekan" ? "ic" : "dis");
@@ -73,7 +77,13 @@ function filtered() {
   });
 }
 
+function updateFilterBadge() {
+  const n = (state.status !== "aktif" ? 1 : 0) + (state.when ? 1 : 0) + (state.mine ? 1 : 0);
+  $("#btn-filters").textContent = n ? `Filtre (${n})` : "Filtre";
+}
+
 function render(fit = false) {
+  updateFilterBadge();
   const list = filtered();
   renderMap(list, fit);
   renderList(list);
@@ -85,7 +95,8 @@ function renderMap(list, fit) {
     L.marker([p.lat, p.lng], { icon: pinIcon(pinClass(p)), title: p.name, keyboard: true })
       .on("click", () => openDetail(p.id)).addTo(markerLayer);
   }
-  if (fit && list.length) {
+  if (fit && list.length && $("#map").clientWidth === 0) mapNeedsFit = true;
+  else if (fit && list.length) {
     map.fitBounds(L.latLngBounds(list.map((p) => [p.lat, p.lng])), { padding: [40, 40], maxZoom: 15 });
   }
 }
@@ -421,6 +432,10 @@ function setView(v) {
 function bind() {
   $("#btn-add").onclick = () => openPlaceForm();
   $("#btn-csv").onclick = exportCsv;
+  $("#btn-filters").onclick = () => {
+    const open = $(".toolbar").classList.toggle("open");
+    $("#btn-filters").setAttribute("aria-expanded", String(open));
+  };
   $("#btn-admin").onclick = onAdminClick;
   $("#form-admin").addEventListener("submit", submitAdmin);
   $$(".chip").forEach((c) => (c.onclick = () => {
