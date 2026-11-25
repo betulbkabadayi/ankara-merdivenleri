@@ -57,7 +57,7 @@ const remote = {
     return { apikey: cfg.SUPABASE_ANON_KEY, Authorization: "Bearer " + cfg.SUPABASE_ANON_KEY, ...extra };
   },
   async request(path, opts = {}) {
-    const res = await fetch(cfg.SUPABASE_URL + path, { ...opts, headers: this.headers(opts.headers) });
+    const res = await fetch(cfg.SUPABASE_URL + path, { cache: "no-store", ...opts, headers: this.headers(opts.headers) });
     const text = await res.text();
     let body = null;
     try { body = text ? JSON.parse(text) : null; } catch { body = text; }

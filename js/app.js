@@ -1,4 +1,4 @@
-import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=11";
+import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=12";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -29,7 +29,11 @@ function toast(msg, isError = false) {
   t.textContent = msg; t.className = "toast" + (isError ? " error" : ""); t.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), isError ? 5000 : 2800);
 }
-function showError(el, msg) { el.textContent = msg; el.hidden = false; }
+function showError(el, msg) {
+  el.textContent = msg; el.hidden = false;
+  // Hata, form uzun olduğunda kaydırmadan görünsün
+  el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
 function hideError(el) { el.hidden = true; el.textContent = ""; }
 
 // İki aşamalı onay (tarayıcı confirm() yerine)
@@ -138,12 +142,18 @@ function renderList(list) {
 }
 
 // ------------------------------------------------------------------ veri yükleme
-async function reload(fit = false) {
+let lastSig = "";
+async function reload(fit = false, quiet = false) {
   try {
-    state.places = await api.listPlaces();
+    const places = await api.listPlaces();
+    const sig = JSON.stringify(places);
     hideError($("#error-banner"));
+    // Arka plan yenilemesinde veri değişmediyse yeniden çizme (kaydırma/odak bozulmasın)
+    if (quiet && sig === lastSig) return;
+    lastSig = sig; state.places = places;
   } catch (e) {
-    showError($("#error-banner"), "Veriler yüklenemedi: " + e.message);
+    if (!quiet) showError($("#error-banner"), "Veriler yüklenemedi: " + e.message);
+    return;
   }
   render(fit);
   if (state.detailId && $("#dlg-detail").open) renderDetail(state.detailId);
@@ -293,6 +303,7 @@ function renderDetail(id) {
   const myAtt = identity.mine("attendees");
   const n = p.attendees.length;
   const full = p.max_attendees && n >= p.max_attendees;
+  const joined = p.attendees.some((a) => myAtt.has(a.id)); // bu cihazdan zaten katılım var
   const photos = p.place_photos.map((ph) => {
     const url = api.photoUrl(ph.path);
     const img = `<img src="${esc(url)}" alt="${esc(p.name)} fotoğrafı" loading="lazy">`;
@@ -323,7 +334,9 @@ function renderDetail(id) {
     </div>
     <footer class="dlg-foot">
       ${mineP ? `<button type="button" class="btn danger" data-act="del-place">Sil</button><button type="button" class="btn ghost" data-act="edit">Düzenle</button>` : ""}
-      <button type="button" class="btn primary" data-act="join" ${full || p.status === "iptal" ? "disabled" : ""}>${full ? "Kontenjan dolu" : "Katılacağım"}</button>
+      ${joined
+        ? `<button type="button" class="btn ghost" data-act="leave-mine">Katılmayacağım</button>`
+        : `<button type="button" class="btn primary" data-act="join" ${full || p.status === "iptal" ? "disabled" : ""}>${full ? "Kontenjan dolu" : "Katılacağım"}</button>`}
     </footer>`;
 }
 
@@ -343,6 +356,13 @@ async function onDetailClick(e) {
     else if (act === "edit") { $("#dlg-detail").close(); openPlaceForm(place); }
     else if (act === "del-place") armed(el, "Emin misiniz? Tekrar dokunun", async () => {
       try { await api.deletePlace(id); $("#dlg-detail").close(); toast("Yer silindi"); await reload(); } catch (x) { showError($("#detail-error"), x.message); }
+    });
+    else if (act === "leave-mine") armed(el, "Emin misiniz? Tekrar dokunun", async () => {
+      try {
+        const mine = identity.mine("attendees");
+        for (const a of place.attendees.filter((x) => mine.has(x.id))) await api.removeAttendee(a.id);
+        toast("Katılım kaldırıldı"); await reload();
+      } catch (x) { showError($("#detail-error"), x.message); }
     });
     else if (act === "leave") { await api.removeAttendee(el.dataset.id); toast("Katılım kaldırıldı"); await reload(); }
     else if (act === "del-photo") armed(el, "?", async () => {
@@ -507,8 +527,14 @@ function bind() {
       () => toast("Konum alınamadı, haritaya dokunarak işaretleyin.", true), { enableHighAccuracy: true, timeout: 10000 });
   };
 
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && !$$("dialog[open]").length) reload(); });
-  setInterval(() => { if (!document.hidden && !$$("dialog[open]").length) reload(); }, 60000);
+  // Otomatik yenileme: form pencereleri (yazarken) ve seçili fotoğraf varken durur; sayfa görünürken 10 sn'de bir.
+  // Detay penceresi açıkken de yenilenir; böylece yeni katılımcılar anında görünür.
+  const busy = () => $$("dialog[open]").some((d) => d.id !== "dlg-detail") || !!$("#detail input[type=file]")?.files?.length;
+  const refresh = () => { if (!document.hidden && !busy()) reload(false, true); };
+  document.addEventListener("visibilitychange", refresh);
+  window.addEventListener("focus", refresh);
+  window.addEventListener("online", refresh);
+  setInterval(refresh, 10000);
 }
 
 // ------------------------------------------------------------------ başlangıç
