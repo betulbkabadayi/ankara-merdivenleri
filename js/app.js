@@ -15,8 +15,11 @@ const state = { places: [], codeRequired: false, cat: "", q: "", status: "aktif"
 // ------------------------------------------------------------------ yardımcılar
 const pad = (n) => String(n).padStart(2, "0");
 const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
-const fmtDate = (s) => new Date(s + "T00:00:00").toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-const fmtShort = (s) => new Date(s + "T00:00:00").toLocaleDateString("tr-TR", { day: "numeric", month: "short", year: "numeric" });
+const fmtDate = (s) => !s ? "Tarih belirlenmedi" : new Date(s + "T00:00:00").toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const fmtShort = (s) => !s ? "Tarih belirlenmedi" : new Date(s + "T00:00:00").toLocaleDateString("tr-TR", { day: "numeric", month: "short", year: "numeric" });
+const isAdmin = () => !!identity.admin();
+const canEdit = (p) => isAdmin() || identity.mine("places").has(p.id);
+const byDate = (a, b) => (a.planned_date || "9999").localeCompare(b.planned_date || "9999");
 const fullName = (a) => `${a.first_name} ${a.last_name}`;
 const inBounds = (lat, lng) => lat >= BOUNDS.latMin && lat <= BOUNDS.latMax && lng >= BOUNDS.lngMin && lng <= BOUNDS.lngMax;
 
@@ -58,8 +61,9 @@ function filtered() {
     if (state.cat && p.category !== state.cat) return false;
     if (state.status === "aktif") { if (p.status === "iptal") return false; }
     else if (state.status && p.status !== state.status) return false;
-    if (state.when === "upcoming" && p.planned_date < today) return false;
-    if (state.when === "past" && p.planned_date >= today) return false;
+    const isPast = !!p.planned_date && p.planned_date < today;
+    if (state.when === "upcoming" && isPast) return false;
+    if (state.when === "past" && !isPast) return false;
     if (state.mine && !p.attendees.some((a) => mine.has(a.id))) return false;
     if (q) {
       const hay = [p.name, p.district, p.address, p.author_name, ...p.attendees.map(fullName)].join(" ").toLocaleLowerCase("tr");
@@ -109,14 +113,17 @@ function renderList(list) {
     return;
   }
   const today = todayStr();
-  const upcoming = list.filter((p) => p.planned_date >= today).sort((a, b) => a.planned_date.localeCompare(b.planned_date));
-  const past = list.filter((p) => p.planned_date < today).sort((a, b) => b.planned_date.localeCompare(a.planned_date));
+  const upcoming = list.filter((p) => p.planned_date && p.planned_date >= today).sort(byDate);
+  const undated = list.filter((p) => !p.planned_date);
+  const past = list.filter((p) => p.planned_date && p.planned_date < today).sort((a, b) => byDate(b, a));
   const group = (items, cls) => {
     const by = new Map();
     for (const p of items) { if (!by.has(p.planned_date)) by.set(p.planned_date, []); by.get(p.planned_date).push(p); }
     return [...by].map(([d, ps]) => `<h3 class="group-title ${cls}">${esc(fmtDate(d))}</h3>${ps.map(cardHtml).join("")}`).join("");
   };
-  box.innerHTML = group(upcoming, "") + (past.length ? `<h3 class="group-title past">— Geçmiş —</h3>` + group(past, "past") : "");
+  box.innerHTML = group(upcoming, "") +
+    (undated.length ? `<h3 class="group-title">Tarihi belirlenmemiş</h3>${undated.map(cardHtml).join("")}` : "") +
+    (past.length ? `<h3 class="group-title past">— Geçmiş —</h3>` + group(past, "past") : "");
 }
 
 // ------------------------------------------------------------------ veri yükleme
@@ -184,13 +191,13 @@ function openPlaceForm(place = null) {
   f.reset(); hideError($("#place-error")); pendingFiles = []; renderPreviews(); pick = null; editingId = place ? place.id : null;
   $("#place-title").textContent = place ? "Yeri Düzenle" : "Yer Ekle";
   $("#place-submit").textContent = place ? "Güncelle" : "Kaydet";
-  $("#loc-block").hidden = !!place;
+  $("#loc-block").hidden = false;
   $("#photo-wrap").hidden = !!place; $("#photo-previews").hidden = !!place;
   $("#status-wrap").hidden = !place;
   f.author.closest("label").hidden = !!place;
   $("#addr-results").hidden = true;
   if (place) {
-    f.name.value = place.name; f.category.value = place.category; f.planned_date.value = place.planned_date;
+    f.name.value = place.name; f.category.value = place.category; f.planned_date.value = place.planned_date || "";
     f.district.value = place.district || ""; f.address.value = place.address || ""; f.notes.value = place.notes || "";
     f.max_attendees.value = place.max_attendees || ""; f.status.value = place.status;
   } else {
@@ -198,18 +205,19 @@ function openPlaceForm(place = null) {
     f.author.value = p.author || [p.first, p.last].filter(Boolean).join(" ");
   }
   $("#dlg-place").showModal();
-  if (!place) {
-    ensurePickMap();
-    if (pickMarker) { pickMap.removeLayer(pickMarker); pickMarker = null; }
-    $("#loc-status").textContent = "Haritaya dokunarak işaretleyin";
-    setTimeout(() => { pickMap.invalidateSize(); pickMap.setView([ANKARA.lat, ANKARA.lng], 11); }, 60);
-  }
+  ensurePickMap();
+  if (pickMarker) { pickMap.removeLayer(pickMarker); pickMarker = null; }
+  if (place) setPick(place.lat, place.lng); else $("#loc-status").textContent = "Haritaya dokunarak işaretleyin";
+  setTimeout(() => {
+    pickMap.invalidateSize();
+    pickMap.setView(place ? [place.lat, place.lng] : [ANKARA.lat, ANKARA.lng], place ? 16 : 11);
+  }, 60);
 }
 
 function placeFormData(f) {
   const max = f.max_attendees.value.trim();
   return {
-    name: f.name.value.trim(), category: f.category.value, planned_date: f.planned_date.value,
+    name: f.name.value.trim(), category: f.category.value, planned_date: f.planned_date.value || null,
     district: f.district.value.trim(), address: f.address.value.trim(), notes: f.notes.value.trim(),
     author: f.author.value.trim(), status: f.status.value || "onerildi", max_attendees: max ? parseInt(max, 10) : null,
     lat: pick?.lat, lng: pick?.lng,
@@ -219,8 +227,8 @@ function placeFormData(f) {
 function validatePlace(d, isEdit) {
   if (d.name.length < 2) return "Mekan adı en az 2 karakter olmalı.";
   if (!CAT[d.category]) return "Kategori seçin (dış mekan / iç mekan).";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(d.planned_date)) return "Önerilen çekim tarihini seçin.";
-  if (!isEdit && (pick == null || !inBounds(d.lat, d.lng))) return pick == null ? "Haritada konumu işaretleyin." : "Konum Ankara çevresinde olmalı.";
+  if (d.planned_date ? !/^\d{4}-\d{2}-\d{2}$/.test(d.planned_date) : !isEdit) return "Önerilen çekim tarihini seçin.";
+  if (pick == null || !inBounds(d.lat, d.lng)) return pick == null ? "Haritada konumu işaretleyin." : "Konum Ankara çevresinde olmalı.";
   if (!isEdit && d.author.length < 2) return "Adınızı yazın.";
   if (d.max_attendees != null && !(d.max_attendees >= 1 && d.max_attendees <= 100)) return "Kontenjan 1-100 arasında olmalı.";
   return null;
@@ -270,7 +278,7 @@ function renderDetail(id) {
   const p = state.places.find((x) => x.id === id);
   const box = $("#detail");
   if (!p) { $("#dlg-detail").close(); return; }
-  const mineP = identity.mine("places").has(p.id);
+  const mineP = canEdit(p);
   const myAtt = identity.mine("attendees");
   const n = p.attendees.length;
   const full = p.max_attendees && n >= p.max_attendees;
@@ -281,7 +289,7 @@ function renderDetail(id) {
       ${mineP ? `<button type="button" data-act="del-photo" data-id="${esc(ph.id)}" aria-label="Fotoğrafı sil">×</button>` : ""}</div>`;
   }).join("");
   const people = p.attendees.map((a) =>
-    `<li class="${myAtt.has(a.id) ? "me" : ""}">${esc(fullName(a))}${myAtt.has(a.id) ? `<button type="button" data-act="leave" data-id="${esc(a.id)}" title="Katılımdan vazgeç" aria-label="Katılımdan vazgeç">×</button>` : ""}</li>`).join("");
+    `<li class="${myAtt.has(a.id) ? "me" : ""}">${esc(fullName(a))}${(myAtt.has(a.id) || isAdmin()) ? `<button type="button" data-act="leave" data-id="${esc(a.id)}" title="Katılımdan vazgeç" aria-label="Katılımdan vazgeç">×</button>` : ""}</li>`).join("");
   const dir = `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
   box.innerHTML = `
     <header class="dlg-head"><h2>${esc(p.name)}</h2><button type="button" class="x" data-close aria-label="Kapat">×</button></header>
@@ -370,12 +378,31 @@ async function submitRsvp(e) {
   finally { btn.disabled = false; }
 }
 
+// ------------------------------------------------------------------ yönetici modu
+function updateAdminUi() {
+  $("#admin-banner").hidden = !isAdmin();
+  $("#btn-admin").textContent = isAdmin() ? "Yönetici modundan çık" : "Yönetici girişi";
+}
+function onAdminClick() {
+  if (isAdmin()) { identity.setAdmin(""); updateAdminUi(); render(); toast("Yönetici modundan çıkıldı"); return; }
+  const f = $("#form-admin"); f.reset(); hideError($("#admin-error")); $("#dlg-admin").showModal();
+}
+async function submitAdmin(e) {
+  e.preventDefault();
+  const code = e.target.code.value.trim(), err = $("#admin-error");
+  if (!code) return showError(err, "Kodu girin.");
+  try {
+    if (!(await api.checkAdmin(code))) return showError(err, "Yönetici kodu hatalı.");
+  } catch (x) { return showError(err, x.message); }
+  identity.setAdmin(code); $("#dlg-admin").close(); updateAdminUi(); render(); toast("Yönetici modu açık");
+}
+
 // ------------------------------------------------------------------ CSV
 function exportCsv() {
   const safe = (v) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
   const head = ["Tarih", "Yer", "Kategori", "İlçe", "Durum", "Ekleyen", "Katılımcı sayısı", "Katılımcılar", "Enlem", "Boylam", "Yol tarifi"];
-  const rows = filtered().sort((a, b) => a.planned_date.localeCompare(b.planned_date)).map((p) => [
-    p.planned_date, p.name, CAT[p.category], p.district, STATUS[p.status], p.author_name, p.attendees.length,
+  const rows = filtered().sort(byDate).map((p) => [
+    p.planned_date || "", p.name, CAT[p.category], p.district, STATUS[p.status], p.author_name, p.attendees.length,
     p.attendees.map(fullName).join("; "), p.lat, p.lng, `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`,
   ]);
   const csv = "﻿" + [head, ...rows].map((r) => r.map(safe).join(";")).join("\r\n");
@@ -394,6 +421,8 @@ function setView(v) {
 function bind() {
   $("#btn-add").onclick = () => openPlaceForm();
   $("#btn-csv").onclick = exportCsv;
+  $("#btn-admin").onclick = onAdminClick;
+  $("#form-admin").addEventListener("submit", submitAdmin);
   $$(".chip").forEach((c) => (c.onclick = () => {
     state.cat = c.dataset.cat; $$(".chip").forEach((x) => x.classList.toggle("active", x === c)); render(true);
   }));
@@ -470,8 +499,10 @@ function bind() {
 // ------------------------------------------------------------------ başlangıç
 (async function main() {
   $("#demo-banner").hidden = !isDemo;
+  updateAdminUi();
   initMap(); bind();
   const info = await api.init(); state.codeRequired = info.codeRequired;
+  if (isAdmin() && !(await api.checkAdmin(identity.admin()).catch(() => true))) { identity.setAdmin(""); updateAdminUi(); }
   await reload(true);
   const m = location.hash.match(/^#yer=([0-9a-f-]{36})$/i);
   if (m && state.places.some((p) => p.id === m[1])) openDetail(m[1]);

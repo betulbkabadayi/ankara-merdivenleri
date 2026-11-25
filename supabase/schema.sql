@@ -22,7 +22,7 @@ create table if not exists public.places (
   lng             double precision not null check (lng between 31.0 and 34.0),
   district        text check (char_length(district) <= 60),
   address         text check (char_length(address) <= 200),
-  planned_date    date not null,
+  planned_date    date,
   notes           text check (char_length(notes) <= 1000),
   status          text not null default 'onerildi' check (status in ('onerildi', 'cekildi', 'iptal')),
   max_attendees   integer check (max_attendees between 1 and 100),
@@ -46,6 +46,9 @@ create table if not exists public.attendees (
   edit_token_hash text not null,
   created_at      timestamptz not null default now()
 );
+
+-- Mevcut kurulumlar için: tarih belirlenmemiş kayıtlara izin ver.
+alter table public.places alter column planned_date drop not null;
 
 create unique index if not exists attendees_unique_person
   on public.attendees (place_id, lower(first_name), lower(last_name));
@@ -146,67 +149,7 @@ begin
   return v_id;
 end $$;
 
-create or replace function public.update_place(
-  p_token text, p_id uuid,
-  p_name text, p_category text, p_district text, p_address text,
-  p_planned_date date, p_notes text, p_status text, p_max_attendees integer default null
-) returns void language plpgsql security definer
-set search_path = public, extensions
-as $$
-begin
-  perform public._check_token(p_token);
-  update public.places set
-    name = btrim(p_name), category = p_category,
-    district = nullif(btrim(p_district), ''), address = nullif(btrim(p_address), ''),
-    planned_date = p_planned_date, notes = nullif(btrim(p_notes), ''),
-    status = p_status, max_attendees = p_max_attendees
-  where id = p_id and edit_token_hash = public._hash(p_token);
-  if not found then raise exception 'YETKISIZ'; end if;
-end $$;
-
-create or replace function public.delete_place(p_token text, p_id uuid)
-returns void language plpgsql security definer
-set search_path = public, extensions
-as $$
-begin
-  perform public._check_token(p_token);
-  delete from public.places where id = p_id and edit_token_hash = public._hash(p_token);
-  if not found then raise exception 'YETKISIZ'; end if;
-end $$;
-
 -- ---------------------------------------------------------------- fotoğraflar
-create or replace function public.add_photo(p_token text, p_place_id uuid, p_path text)
-returns uuid language plpgsql security definer
-set search_path = public, extensions
-as $$
-declare v_id uuid;
-begin
-  perform public._check_token(p_token);
-  if not exists (select 1 from public.places
-                 where id = p_place_id and edit_token_hash = public._hash(p_token)) then
-    raise exception 'YETKISIZ';
-  end if;
-  if p_path not like p_place_id::text || '/%' then raise exception 'GECERSIZ_YOL'; end if;
-  if (select count(*) from public.place_photos where place_id = p_place_id) >= 5 then
-    raise exception 'FOTOGRAF_LIMITI';
-  end if;
-  insert into public.place_photos (place_id, path) values (p_place_id, p_path) returning id into v_id;
-  return v_id;
-end $$;
-
-create or replace function public.delete_photo(p_token text, p_photo_id uuid)
-returns void language plpgsql security definer
-set search_path = public, extensions
-as $$
-declare v_path text;
-begin
-  perform public._check_token(p_token);
-  delete from public.place_photos ph using public.places pl
-   where ph.id = p_photo_id and pl.id = ph.place_id and pl.edit_token_hash = public._hash(p_token)
-  returning ph.path into v_path;
-  if not found then raise exception 'YETKISIZ'; end if;
-end $$;
-
 -- ---------------------------------------------------------------- katılım (RSVP)
 create or replace function public.add_attendee(
   p_code text, p_token text, p_place_id uuid, p_first text, p_last text
@@ -232,27 +175,118 @@ exception when unique_violation then
   raise exception 'ZATEN_KATILIYOR';
 end $$;
 
-create or replace function public.remove_attendee(p_token text, p_id uuid)
+-- ---------------------------------------------------------------- yönetici kodu ve düzenleme işlemleri
+-- Yönetici kodu (app_settings.admin_code_hash) her kaydı düzenleyip silebilir.
+create or replace function public._is_admin(p_admin text)
+returns boolean language plpgsql security definer
+set search_path = public, extensions
+as $$
+declare v_hash text;
+begin
+  if p_admin is null or p_admin = '' then return false; end if;
+  select value into v_hash from public.app_settings where key = 'admin_code_hash';
+  return v_hash is not null and public._hash(p_admin) = v_hash;
+end $$;
+
+create or replace function public.check_admin(p_admin text)
+returns boolean language sql security definer
+set search_path = public, extensions
+as $$ select public._is_admin(p_admin) $$;
+
+-- Eski imzalar (yönetici parametresi eklenmeden önceki sürümler)
+drop function if exists public.update_place(text, uuid, text, text, text, text, date, text, text, integer);
+drop function if exists public.delete_place(text, uuid);
+drop function if exists public.add_photo(text, uuid, text);
+drop function if exists public.delete_photo(text, uuid);
+drop function if exists public.remove_attendee(text, uuid);
+
+create or replace function public.update_place(
+  p_token text, p_id uuid,
+  p_name text, p_category text, p_district text, p_address text,
+  p_planned_date date, p_notes text, p_status text,
+  p_max_attendees integer default null,
+  p_lat double precision default null, p_lng double precision default null,
+  p_admin text default null
+) returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  perform public._check_token(p_token);
+  update public.places set
+    name = btrim(p_name), category = p_category,
+    district = nullif(btrim(p_district), ''), address = nullif(btrim(p_address), ''),
+    planned_date = p_planned_date, notes = nullif(btrim(p_notes), ''),
+    status = p_status, max_attendees = p_max_attendees,
+    lat = coalesce(p_lat, lat), lng = coalesce(p_lng, lng)
+  where id = p_id and (edit_token_hash = public._hash(p_token) or public._is_admin(p_admin));
+  if not found then raise exception 'YETKISIZ'; end if;
+end $$;
+
+create or replace function public.delete_place(p_token text, p_id uuid, p_admin text default null)
 returns void language plpgsql security definer
 set search_path = public, extensions
 as $$
 begin
   perform public._check_token(p_token);
-  delete from public.attendees where id = p_id and edit_token_hash = public._hash(p_token);
+  delete from public.places
+   where id = p_id and (edit_token_hash = public._hash(p_token) or public._is_admin(p_admin));
+  if not found then raise exception 'YETKISIZ'; end if;
+end $$;
+
+create or replace function public.add_photo(p_token text, p_place_id uuid, p_path text, p_admin text default null)
+returns uuid language plpgsql security definer
+set search_path = public, extensions
+as $$
+declare v_id uuid;
+begin
+  perform public._check_token(p_token);
+  if not exists (select 1 from public.places
+                 where id = p_place_id
+                   and (edit_token_hash = public._hash(p_token) or public._is_admin(p_admin))) then
+    raise exception 'YETKISIZ';
+  end if;
+  if p_path not like p_place_id::text || '/%' then raise exception 'GECERSIZ_YOL'; end if;
+  if (select count(*) from public.place_photos where place_id = p_place_id) >= 5 then
+    raise exception 'FOTOGRAF_LIMITI';
+  end if;
+  insert into public.place_photos (place_id, path) values (p_place_id, p_path) returning id into v_id;
+  return v_id;
+end $$;
+
+create or replace function public.delete_photo(p_token text, p_photo_id uuid, p_admin text default null)
+returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  perform public._check_token(p_token);
+  delete from public.place_photos ph using public.places pl
+   where ph.id = p_photo_id and pl.id = ph.place_id
+     and (pl.edit_token_hash = public._hash(p_token) or public._is_admin(p_admin));
+  if not found then raise exception 'YETKISIZ'; end if;
+end $$;
+
+create or replace function public.remove_attendee(p_token text, p_id uuid, p_admin text default null)
+returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  perform public._check_token(p_token);
+  delete from public.attendees
+   where id = p_id and (edit_token_hash = public._hash(p_token) or public._is_admin(p_admin));
   if not found then raise exception 'YETKISIZ'; end if;
 end $$;
 
 -- ---------------------------------------------------------------- fonksiyon yetkileri
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function
-  public.code_required(), public.check_code(text),
+  public.code_required(), public.check_code(text), public.check_admin(text),
   public.add_place(text, text, text, text, double precision, double precision, text, text, date, text, text, integer),
-  public.update_place(text, uuid, text, text, text, text, date, text, text, integer),
-  public.delete_place(text, uuid),
-  public.add_photo(text, uuid, text),
-  public.delete_photo(text, uuid),
+  public.update_place(text, uuid, text, text, text, text, date, text, text, integer, double precision, double precision, text),
+  public.delete_place(text, uuid, text),
+  public.add_photo(text, uuid, text, text),
+  public.delete_photo(text, uuid, text),
   public.add_attendee(text, text, uuid, text, text),
-  public.remove_attendee(text, uuid)
+  public.remove_attendee(text, uuid, text)
 to anon, authenticated;
 
 -- ---------------------------------------------------------------- fotoğraf deposu
@@ -285,5 +319,9 @@ create policy "photos_delete_orphans" on storage.objects for delete to anon, aut
 -- Davet kodunu ayarlamak için (örnek, kendi kodunuzla çalıştırın):
 --   insert into public.app_settings (key, value)
 --   values ('invite_code_hash', encode(extensions.digest('KODUNUZ', 'sha256'), 'hex'))
+--   on conflict (key) do update set value = excluded.value;
+-- Yönetici kodu (tüm kayıtları düzenleme/silme):
+--   insert into public.app_settings (key, value)
+--   values ('admin_code_hash', encode(extensions.digest('YONETICI_KODU', 'sha256'), 'hex'))
 --   on conflict (key) do update set value = excluded.value;
 -- Kodu kaldırmak için:  delete from public.app_settings where key = 'invite_code_hash';

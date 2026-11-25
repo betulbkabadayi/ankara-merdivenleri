@@ -25,6 +25,8 @@ export const identity = {
   removeMine(kind, id) { const s = identity.mine(kind); s.delete(id); LS.set("st_mine_" + kind, [...s]); },
   code() { return LS.get("st_code", ""); },
   setCode(c) { LS.set("st_code", c); },
+  admin() { return LS.get("st_admin", ""); },
+  setAdmin(c) { LS.set("st_admin", c); },
   profile() { return LS.get("st_profile", { first: "", last: "" }); },
   setProfile(p) { LS.set("st_profile", p); },
 };
@@ -71,10 +73,11 @@ const remote = {
     try { return { codeRequired: !!(await this.rpc("code_required", {})) }; } catch { return { codeRequired: false }; }
   },
   checkCode: (code) => remote.rpc("check_code", { p_code: code }),
+  checkAdmin: (code) => remote.rpc("check_admin", { p_admin: code }),
   listPlaces() {
     const sel = "id,name,category,lat,lng,district,address,planned_date,notes,status,max_attendees,author_name,created_at," +
       "place_photos(id,path),attendees(id,first_name,last_name,created_at)";
-    return this.request("/rest/v1/places?select=" + encodeURIComponent(sel) + "&order=planned_date.asc,created_at.asc");
+    return this.request("/rest/v1/places?select=" + encodeURIComponent(sel) + "&order=planned_date.asc.nullslast,created_at.asc");
   },
   async addPlace(d, code) {
     const id = await this.rpc("add_place", {
@@ -91,6 +94,7 @@ const remote = {
       p_token: identity.token(), p_id: id, p_name: d.name, p_category: d.category,
       p_district: d.district || null, p_address: d.address || null, p_planned_date: d.planned_date,
       p_notes: d.notes || null, p_status: d.status, p_max_attendees: d.max_attendees || null,
+      p_lat: d.lat ?? null, p_lng: d.lng ?? null, p_admin: identity.admin() || null,
     });
   },
   async photoPaths(filter) {
@@ -108,7 +112,7 @@ const remote = {
   },
   async deletePlace(id) {
     const paths = await this.photoPaths("place_id=eq." + id).catch(() => []);
-    await this.rpc("delete_place", { p_token: identity.token(), p_id: id });
+    await this.rpc("delete_place", { p_token: identity.token(), p_id: id, p_admin: identity.admin() || null });
     identity.removeMine("places", id);
     await this.removeFiles(paths);
   },
@@ -117,11 +121,11 @@ const remote = {
     await this.request(`/storage/v1/object/place-photos/${path}`, {
       method: "POST", headers: { "Content-Type": blob.type || "image/jpeg", "x-upsert": "false" }, body: blob,
     });
-    await this.rpc("add_photo", { p_token: identity.token(), p_place_id: placeId, p_path: path });
+    await this.rpc("add_photo", { p_token: identity.token(), p_place_id: placeId, p_path: path, p_admin: identity.admin() || null });
   },
   async deletePhoto(photoId) {
     const paths = await this.photoPaths("id=eq." + photoId).catch(() => []);
-    await this.rpc("delete_photo", { p_token: identity.token(), p_photo_id: photoId });
+    await this.rpc("delete_photo", { p_token: identity.token(), p_photo_id: photoId, p_admin: identity.admin() || null });
     await this.removeFiles(paths);
   },
   async addAttendee(placeId, first, last, code) {
@@ -132,7 +136,7 @@ const remote = {
     return id;
   },
   async removeAttendee(id) {
-    await this.rpc("remove_attendee", { p_token: identity.token(), p_id: id });
+    await this.rpc("remove_attendee", { p_token: identity.token(), p_id: id, p_admin: identity.admin() || null });
     identity.removeMine("attendees", id);
   },
   photoUrl: (path) => `${cfg.SUPABASE_URL}/storage/v1/object/public/place-photos/${path}`,
@@ -146,6 +150,7 @@ const demo = {
   },
   async init() { return { codeRequired: false }; },
   async checkCode() { return true; },
+  async checkAdmin() { return false; },
   async listPlaces() {
     const db = this.db();
     return db.places.map((p) => ({
@@ -168,7 +173,8 @@ const demo = {
     if (!p) throw friendly("YER_YOK");
     Object.assign(p, {
       name: d.name.trim(), category: d.category, district: d.district || null, address: d.address || null,
-      planned_date: d.planned_date, notes: d.notes || null, status: d.status, max_attendees: d.max_attendees || null,
+      planned_date: d.planned_date || null, notes: d.notes || null, status: d.status, max_attendees: d.max_attendees || null,
+      lat: d.lat ?? p.lat, lng: d.lng ?? p.lng,
     });
     this.save(db);
   },
@@ -209,6 +215,7 @@ const impl = isDemo ? demo : remote;
 export const api = {
   init: () => impl.init(),
   checkCode: (c) => impl.checkCode(c),
+  checkAdmin: (c) => impl.checkAdmin(c),
   listPlaces: () => impl.listPlaces(),
   addPlace: (d, code) => impl.addPlace(d, code),
   updatePlace: (id, d) => impl.updatePlace(id, d),

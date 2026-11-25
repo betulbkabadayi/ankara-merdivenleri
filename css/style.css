@@ -23,6 +23,8 @@ a { color: var(--ic); }
 .brand h1 { font-size: 17px; line-height: 1.15; }
 .sub { font-size: 12px; color: #c4ccd6; }
 .banner { background: #fff4d6; color: #6a4a00; padding: 8px 14px; font-size: 13px; border-bottom: 1px solid #f0d58a; }
+.banner.admin { background: #e5f3ea; color: #14532d; border-color: #b7dfc4; }
+.linklike { border: 0; background: none; padding: 0; color: var(--muted); text-decoration: underline; cursor: pointer; font-size: inherit; }
 .banner.error { background: #fde8e6; color: var(--bad); border-color: #f4b8b2; }
 
 .btn {

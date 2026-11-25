@@ -26,6 +26,7 @@
   <div id="demo-banner" class="banner" hidden>
     Demo modu: veritabanı bağlı değil, eklediğiniz kayıtlar yalnızca bu tarayıcıda saklanır.
   </div>
+  <div id="admin-banner" class="banner admin" hidden>Yönetici modu açık: tüm kayıtları düzenleyebilir ve silebilirsiniz.</div>
   <div id="error-banner" class="banner error" hidden></div>
 
   <section class="toolbar">
@@ -165,10 +166,27 @@
     </form>
   </dialog>
 
+  <!-- Yönetici girişi -->
+  <dialog id="dlg-admin">
+    <form id="form-admin" method="dialog" novalidate>
+      <header class="dlg-head"><h2>Yönetici girişi</h2><button type="button" class="x" data-close aria-label="Kapat">×</button></header>
+      <div class="dlg-body">
+        <p class="muted">Yönetici kodu ile tüm kayıtların konum, tarih ve bilgilerini düzenleyebilir, kayıt silebilirsiniz. Kod bu cihazda hatırlanır.</p>
+        <label>Yönetici kodu <input name="code" required autocomplete="off"></label>
+        <p id="admin-error" class="form-error" role="alert" hidden></p>
+      </div>
+      <footer class="dlg-foot">
+        <button type="button" class="btn ghost" data-close>Vazgeç</button>
+        <button type="submit" class="btn primary">Giriş</button>
+      </footer>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <footer class="foot">
     Harita verisi © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> katkıda bulunanlar.
+    · <button id="btn-admin" type="button" class="linklike">Yönetici girişi</button>
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
