@@ -4,11 +4,15 @@
   --radius: 12px; --shadow: 0 1px 2px rgba(20, 30, 45, .08), 0 4px 14px rgba(20, 30, 45, .06);
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; overflow-x: hidden; }
+html { -webkit-text-size-adjust: 100%; height: 100%; overflow: hidden; overscroll-behavior: none; }
+body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+/* Çift dokunma ile yakınlaşma gecikmesi ve yana oynama olmasın; dikey kaydırma serbest */
+button, a, label, select, summary, .card, .tab, .chip { touch-action: manipulation; }
+.toolbar, .topbar, .viewtabs, .foot, .banner { touch-action: pan-y; }
 body {
   margin: 0; background: var(--bg); color: var(--ink); line-height: 1.45;
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden;
+  display: flex; flex-direction: column; position: fixed; inset: 0; overflow: hidden;
 }
 h1, h2, h3, p { margin: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
@@ -160,6 +164,20 @@ label small, .label small { font-weight: 400; }
   /* iOS/Android: 16px altındaki yazı boyutu, kutuya dokununca sayfayı otomatik yakınlaştırır */
   input, select, textarea { font-size: 16px; }
   .banner { padding: 6px 12px; font-size: 12px; }
+  .btn { min-height: 44px; }
+  .btn.small { min-height: 40px; }
+  .chip { min-height: 40px; }
+  #btn-csv, .toolbar input[type=search], .toolbar select { min-height: 44px; }
+  .tab { min-height: 46px; }
+  .card { padding: 13px 14px; }
+  .x { width: 44px; height: 44px; }
+  .people li button { min-width: 32px; min-height: 32px; }
+  .thumb button { width: 32px; height: 32px; }
+  input, select, textarea { min-height: 44px; }
+  .foot { padding: 10px 14px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .dlg-foot { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  #list-pane { -webkit-overflow-scrolling: touch; touch-action: pan-y; padding-bottom: 16px; }
+  .dlg-body { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y; }
   .brand .sub { display: none; }
   .row { grid-template-columns: 1fr; }
   .row.tight { grid-template-columns: 1fr auto auto; }
