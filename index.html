@@ -9,7 +9,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231f2a37'/%3E%3Cpath d='M6 24h6v-5h6v-5h8' fill='none' stroke='%23f5b942' stroke-width='3'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-  <link rel="stylesheet" href="css/style.css?v=14">
+  <link rel="stylesheet" href="css/style.css?v=15">
   <script>
     // Telefonlarda gerçekten görünen alan (adres çubuğu, alt çubuk ve klavye hariç) CSS'e aktarılır.
     (function () {
@@ -41,7 +41,17 @@
   <div id="demo-banner" class="banner" hidden>
     Demo modu: veritabanı bağlı değil, eklediğiniz kayıtlar yalnızca bu tarayıcıda saklanır.
   </div>
-  <div id="admin-banner" class="banner admin" hidden>Yönetici modu açık: tüm kayıtları düzenleyebilir ve silebilirsiniz.</div>
+  <div id="admin-banner" class="banner admin" hidden>Yönetici modu açık: tüm kayıtları düzenleyebilir ve silebilirsiniz.
+    <button id="btn-bulk" type="button" class="btn ghost small">Toplu işlem</button></div>
+  <div id="bulk-bar" class="banner admin bulk" hidden>
+    <span id="bulk-count">0 seçili</span>
+    <button id="b-all" type="button" class="btn ghost small">Listedekileri seç</button>
+    <button id="b-past" type="button" class="btn ghost small">Eski çekimleri seç</button>
+    <button id="b-clear" type="button" class="btn ghost small">Temizle</button>
+    <button id="b-done" type="button" class="btn ghost small">Çekildi yap</button>
+    <button id="b-cancel" type="button" class="btn ghost small">İptal yap</button>
+    <button id="b-del" type="button" class="btn danger small">Sil</button>
+  </div>
   <div id="error-banner" class="banner error" hidden></div>
 
   <section class="toolbar">
@@ -66,7 +76,9 @@
       <option value="past">Geçmiş</option>
     </select>
     <label class="check"><input id="f-mine" type="checkbox"> Katıldıklarım</label>
+    <label class="check"><input id="f-mine-places" type="checkbox"> Eklediklerim</label>
     <button id="btn-csv" class="btn ghost" title="Listeyi CSV olarak indir">CSV</button>
+    <button id="btn-json" class="btn ghost" title="Tüm veriyi (yorum ve katılımcılar dahil) yedek olarak indir">Yedek</button>
     </div>
   </section>
 
@@ -212,6 +224,6 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="js/config.js?v=3"></script>
-  <script type="module" src="js/app.js?v=16"></script>
+  <script type="module" src="js/app.js?v=17"></script>
 </body>
 </html>

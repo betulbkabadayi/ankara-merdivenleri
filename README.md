@@ -9,7 +9,9 @@ Statik site (GitHub Pages) + Supabase (Postgres + Storage). Giriş yok.
 - Buluşma saati/noktası ve pratik bilgiler (ücret, çalışma saati, izin…), her yerin altında yorumlar
 - Detayda **Paylaş**, **Takvime ekle** (.ics ve Google Takvim); listede "Bu hafta" grubu, aynı güne düşen yerler için "Rotayı aç"
 - **Katılacağım**: ad + soyad ile çekime katılım, katılımcı listesi, vazgeçme
-- Filtre: kategori, durum, tarih, arama, "Katıldıklarım"; CSV dışa aktarma
+- Filtre: kategori, durum, tarih, arama, "Katıldıklarım", "Eklediklerim"; CSV dışa aktarma ve tüm veriyi JSON yedek olarak indirme (Yedek)
+- Yeni yer eklerken yakında/benzer adlı kayıt varsa uyarı
+- Yönetici modunda **Toplu işlem**: seçilen kayıtları toplu sil / "Çekildi" / "İptal" yap
 - Düzenleme/silme yalnızca kaydı ekleyen cihazdan (cihaz anahtarı)
 - İsteğe bağlı ortak davet kodu (bot ve istenmeyen ekleme koruması)
 - Mobil öncelikli, Türkçe arayüz

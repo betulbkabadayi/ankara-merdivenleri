@@ -10,7 +10,7 @@ const ANKARA = { lat: 39.9208, lng: 32.8541 };
 const BOUNDS = { latMin: 39.0, latMax: 40.8, lngMin: 31.0, lngMax: 34.0 };
 const MAX_PHOTOS = 5;
 
-const state = { places: [], codeRequired: false, cat: "", q: "", status: "aktif", when: "", mine: false, view: "list", detailId: null };
+const state = { places: [], codeRequired: false, cat: "", q: "", status: "aktif", when: "", mine: false, mineP: false, view: "list", detailId: null, bulk: false, sel: new Set() };
 
 // ------------------------------------------------------------------ yardımcılar
 const pad = (n) => String(n).padStart(2, "0");
@@ -114,8 +114,10 @@ const pinClass = (p) => (p.status === "cekildi" ? "cekildi" : p.status === "ipta
 function filtered() {
   const q = state.q.trim().toLocaleLowerCase("tr");
   const mine = identity.mine("attendees");
+  const myPlaces = identity.mine("places");
   const today = todayStr();
   return state.places.filter((p) => {
+    if (state.mineP && !myPlaces.has(p.id)) return false;
     if (state.cat && p.category !== state.cat) return false;
     if (state.status === "aktif") { if (p.status === "iptal") return false; }
     else if (state.status && p.status !== state.status) return false;
@@ -132,7 +134,7 @@ function filtered() {
 }
 
 function updateFilterBadge() {
-  const n = (state.status !== "aktif" ? 1 : 0) + (state.when ? 1 : 0) + (state.mine ? 1 : 0);
+  const n = (state.status !== "aktif" ? 1 : 0) + (state.when ? 1 : 0) + (state.mine ? 1 : 0) + (state.mineP ? 1 : 0);
   $("#btn-filters").textContent = n ? `Filtre (${n})` : "Filtre";
 }
 
@@ -161,8 +163,9 @@ function cardHtml(p) {
   const cap = p.max_attendees ? `${n}/${p.max_attendees}` : String(n);
   const dd = p.planned_date && p.status === "onerildi" ? daysUntil(p.planned_date) : -1;
   const soon = dd >= 0 && dd <= 7 ? (dd === 0 ? "Bugün" : dd === 1 ? "Yarın" : `${dd} gün sonra`) : "";
-  return `<button class="card ${p.category === "ic_mekan" ? "ic" : ""} ${p.status === "iptal" ? "iptal" : ""}" data-id="${esc(p.id)}">
-    <div class="t">${esc(p.name)}</div>
+  const sel = state.bulk && state.sel.has(p.id);
+  return `<button class="card ${p.category === "ic_mekan" ? "ic" : ""} ${p.status === "iptal" ? "iptal" : ""} ${sel ? "selected" : ""}" data-id="${esc(p.id)}">
+    <div class="t">${state.bulk ? `<span class="selbox" aria-hidden="true">${sel ? "☑" : "☐"}</span>` : ""}${esc(p.name)}</div>
     <div class="m">
       ${soon ? `<span class="badge soon">${esc(soon)}</span>` : ""}
       ${p.meet_time ? `<span>🕙 ${esc(hhmm(p.meet_time))}</span>` : ""}
@@ -238,7 +241,24 @@ async function ensureCode() {
 }
 
 // ------------------------------------------------------------------ yer ekle / düzenle
-let pickMap, pickMarker, pick = null, pendingFiles = [], editingId = null;
+let pickMap, pickMarker, pick = null, pendingFiles = [], editingId = null, dupAck = "";
+
+// Yinelenen kayıt uyarısı: 100 m içinde ya da (2 km içinde ve) benzer adlı kayıt
+const norm = (s) => String(s || "").toLocaleLowerCase("tr").replace(/[^a-z0-9çğıöşü]+/g, " ").trim();
+function distM(a, b) {
+  const R = 6371000, rad = (x) => (x * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function findDuplicates(d) {
+  const n = norm(d.name);
+  return state.places.map((p) => ({ p, m: distM(d, p) })).filter(({ p, m }) => {
+    if (m <= 100) return true;
+    const pn = norm(p.name);
+    return m <= 2000 && n.length >= 4 && pn.length >= 4 && (pn === n || pn.includes(n) || n.includes(pn));
+  }).sort((a, b) => a.m - b.m);
+}
 
 function setPick(lat, lng, zoom) {
   pick = { lat, lng };
@@ -271,7 +291,7 @@ function renderPreviews() {
 
 function openPlaceForm(place = null) {
   const f = $("#form-place");
-  f.reset(); hideError($("#place-error")); pendingFiles = []; renderPreviews(); pick = null; editingId = place ? place.id : null;
+  f.reset(); hideError($("#place-error")); pendingFiles = []; renderPreviews(); pick = null; editingId = place ? place.id : null; dupAck = "";
   $("#place-title").textContent = place ? "Yeri Düzenle" : "Yer Ekle";
   $("#place-submit").textContent = place ? "Güncelle" : "Kaydet";
   $("#loc-block").hidden = false;
@@ -328,6 +348,13 @@ async function submitPlace(e) {
   const d = placeFormData(f);
   const bad = validatePlace(d, !!editingId);
   if (bad) return showError(errBox, bad);
+  if (!editingId) {
+    const dups = findDuplicates(d), sig = dups.map((x) => x.p.id).join(",");
+    if (dups.length && dupAck !== sig) {
+      dupAck = sig; const x = dups[0];
+      return showError(errBox, `Yakınlarda benzer bir kayıt var: "${x.p.name}" (${Math.round(x.m)} m, ${fmtShort(x.p.planned_date)}). Yine de yeni kayıt eklemek için tekrar Kaydet'e basın.`);
+    }
+  }
   const btn = $("#place-submit"); btn.disabled = true;
   try {
     if (editingId) {
@@ -516,7 +543,41 @@ async function submitRsvp(e) {
 }
 
 // ------------------------------------------------------------------ yönetici modu
+// ---- Toplu işlem (yalnızca yönetici): seçilen kayıtları sil / durumunu değiştir
+function updateBulkUi() {
+  const on = isAdmin() && state.bulk;
+  $("#bulk-bar").hidden = !on;
+  $("#btn-bulk").textContent = on ? "Toplu işlemi kapat" : "Toplu işlem";
+  $("#bulk-count").textContent = `${state.sel.size} seçili`;
+}
+function setBulk(on) { state.bulk = on && isAdmin(); state.sel.clear(); updateBulkUi(); render(); }
+function toggleSel(id) {
+  if (state.sel.has(id)) state.sel.delete(id); else state.sel.add(id);
+  const card = $(`.card[data-id="${id}"]`), on = state.sel.has(id);
+  if (card) { card.classList.toggle("selected", on); const b = card.querySelector(".selbox"); if (b) b.textContent = on ? "☑" : "☐"; }
+  updateBulkUi();
+}
+async function bulkRun(fn, doneMsg) {
+  if (!state.sel.size) return toast("Önce kayıt seçin.", true);
+  let ok = 0, fail = 0;
+  for (const id of [...state.sel]) {
+    const p = state.places.find((x) => x.id === id);
+    if (!p) continue;
+    try { await fn(p); ok++; } catch (e) { fail++; console.warn(e); }
+  }
+  state.sel.clear(); updateBulkUi();
+  toast(fail ? `${ok} kayıt işlendi, ${fail} kayıt başarısız.` : `${ok} kayıt ${doneMsg}.`, !!fail);
+  await reload();
+}
+const bulkStatus = (status) => bulkRun((p) => api.updatePlace(p.id, {
+  name: p.name, category: p.category, district: p.district, address: p.address, planned_date: p.planned_date,
+  notes: p.notes, status, max_attendees: p.max_attendees, lat: p.lat, lng: p.lng,
+  meet_time: p.meet_time, meet_point: p.meet_point, info: p.info,
+}), "güncellendi");
+
 function updateAdminUi() {
+  if (!isAdmin()) { state.bulk = false; state.sel.clear(); }
+  updateBulkUi();
   $("#admin-banner").hidden = !isAdmin();
   $("#btn-admin").textContent = isAdmin() ? "Yönetici modundan çık" : "Yönetici girişi";
 }
@@ -535,6 +596,17 @@ async function submitAdmin(e) {
 }
 
 // ------------------------------------------------------------------ CSV
+// Tüm veriyi (filtreden bağımsız; katılımcı, yorum ve fotoğraf adresleri dahil) JSON yedeği olarak indirir
+function exportJson() {
+  const data = {
+    exported_at: new Date().toISOString(),
+    places: state.places.map((p) => ({ ...p, place_photos: p.place_photos.map((ph) => (isDemo ? ph : { ...ph, url: api.photoUrl(ph.path) })) })),
+  };
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  a.download = `ankara-merdivenleri-yedek-${todayStr()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 function exportCsv() {
   const safe = (v) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
   const head = ["Tarih", "Saat", "Yer", "Kategori", "İlçe", "Durum", "Ekleyen", "Katılımcı sayısı", "Katılımcılar", "Enlem", "Boylam", "Yol tarifi"];
@@ -558,6 +630,22 @@ function setView(v) {
 function bind() {
   $("#btn-add").onclick = () => openPlaceForm();
   $("#btn-csv").onclick = exportCsv;
+  $("#btn-json").onclick = exportJson;
+  $("#btn-bulk").onclick = () => setBulk(!state.bulk);
+  $("#b-all").onclick = () => { filtered().forEach((p) => state.sel.add(p.id)); updateBulkUi(); render(); };
+  $("#b-past").onclick = () => {
+    const today = todayStr();
+    state.places.filter((p) => p.status === "cekildi" && p.planned_date && p.planned_date < today).forEach((p) => state.sel.add(p.id));
+    updateBulkUi(); render();
+  };
+  $("#b-clear").onclick = () => { state.sel.clear(); updateBulkUi(); render(); };
+  $("#b-done").onclick = () => bulkStatus("cekildi");
+  $("#b-cancel").onclick = () => bulkStatus("iptal");
+  $("#b-del").onclick = (e) => {
+    if (!state.sel.size) return toast("Önce kayıt seçin.", true);
+    armed(e.currentTarget, `Emin misiniz? ${state.sel.size} kayıt silinecek`, () => bulkRun((p) => api.deletePlace(p.id), "silindi"));
+  };
+  $("#f-mine-places").onchange = (e) => { state.mineP = e.target.checked; render(true); };
   $("#btn-filters").onclick = () => {
     const open = $(".toolbar").classList.toggle("open");
     $("#btn-filters").setAttribute("aria-expanded", String(open));
@@ -572,7 +660,10 @@ function bind() {
   $("#f-when").onchange = (e) => { state.when = e.target.value; render(true); };
   $("#f-mine").onchange = (e) => { state.mine = e.target.checked; render(true); };
   $$(".tab").forEach((t) => (t.onclick = () => setView(t.dataset.view)));
-  $("#list").onclick = (e) => { const c = e.target.closest(".card"); if (c) openDetail(c.dataset.id); };
+  $("#list").onclick = (e) => {
+    const c = e.target.closest(".card"); if (!c) return;
+    if (state.bulk) toggleSel(c.dataset.id); else openDetail(c.dataset.id);
+  };
 
   $$("dialog").forEach((d) => {
     d.addEventListener("click", (e) => { if (e.target.closest("[data-close]")) d.close(); else if (e.target === d && d.id === "dlg-detail") d.close(); });

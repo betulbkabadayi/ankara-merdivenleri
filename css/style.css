@@ -242,3 +242,10 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; justif
 .comments .ch { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 2px; }
 .comments .ch button { margin-left: auto; border: 0; background: transparent; cursor: pointer; color: var(--bad); font-weight: 700; min-width: 32px; min-height: 28px; }
 .comment-form { display: flex; flex-direction: column; gap: 8px; }
+
+/* Toplu işlem (yönetici) */
+.banner .btn.small { margin-left: 8px; }
+.bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.bulk .btn.small { margin-left: 0; }
+.selbox { margin-right: 6px; }
+.card.selected { outline: 2px solid var(--accent); background: #fffaf0; }
