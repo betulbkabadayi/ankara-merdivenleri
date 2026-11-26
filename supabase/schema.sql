@@ -83,6 +83,36 @@ do $$ begin
   alter table public.place_photos add constraint photos_exhibit_val check (exhibit in ('aday', 'secildi'));
 exception when duplicate_object then null; end $$;
 
+-- Kategoriler: düzenlenebilir, iki seviyeli (ana kategori › alt kategori).
+-- Başlangıç kategorileri (dis_mekan, ic_mekan) yalnızca yönetici tarafından düzenlenir; sonradan eklenenleri
+-- ekleyen cihaz ya da yönetici düzenler/siler.
+create table if not exists public.categories (
+  id              text primary key,
+  name            text not null check (char_length(name) between 2 and 40),
+  parent_id       text references public.categories(id) on delete restrict,
+  color           text check (color ~ '^#[0-9a-fA-F]{6}$'),
+  sort            integer not null default 100,
+  edit_token_hash text,
+  created_at      timestamptz not null default now()
+);
+insert into public.categories (id, name, color, sort) values
+  ('dis_mekan', 'Dış mekan', '#d9641e', 1),
+  ('ic_mekan',  'İç mekan',  '#2563c9', 2)
+on conflict (id) do nothing;
+
+alter table public.categories enable row level security;
+drop policy if exists categories_read on public.categories;
+create policy categories_read on public.categories for select to anon, authenticated using (true);
+revoke all on public.categories from anon, authenticated;
+grant select (id, name, parent_id, color, sort, created_at) on public.categories to anon, authenticated;
+
+-- Yerlerin kategorisi artık sabit bir liste değil, categories tablosuna bağlı.
+alter table public.places drop constraint if exists places_category_check;
+do $$ begin
+  alter table public.places add constraint places_category_fk
+    foreign key (category) references public.categories(id) on update cascade;
+exception when duplicate_object then null; end $$;
+
 -- Uygulamaya yalnızca sergide yer almak isteyenler katıldığı için ayrı izin kutusu yok:
 -- tüm fotoğraflar izinli sayılır (consent sütunu geriye dönük uyumluluk için duruyor).
 update public.place_photos set consent = true where not consent;
@@ -410,6 +440,77 @@ begin
   if not found then raise exception 'YETKISIZ'; end if;
 end $$;
 
+-- ---------------------------------------------------------------- kategoriler
+create or replace function public.add_category(
+  p_code text, p_token text, p_name text, p_parent text default null, p_color text default null
+) returns text language plpgsql security definer
+set search_path = public, extensions
+as $$
+declare v_id text; v_name text := btrim(p_name);
+begin
+  perform public._check_code(p_code);
+  perform public._check_token(p_token);
+  if (select count(*) from public.categories where created_at > now() - interval '1 minute') >= 6 then
+    raise exception 'COK_FAZLA_ISTEK';
+  end if;
+  if char_length(v_name) < 2 or char_length(v_name) > 40 then raise exception 'GECERSIZ_DEGER'; end if;
+  if p_color is not null and p_color !~ '^#[0-9a-fA-F]{6}$' then raise exception 'GECERSIZ_DEGER'; end if;
+  if p_parent is not null and not exists (select 1 from public.categories where id = p_parent and parent_id is null) then
+    raise exception 'KATEGORI_SEVIYE';
+  end if;
+  if exists (select 1 from public.categories where lower(name) = lower(v_name) and parent_id is not distinct from p_parent) then
+    raise exception 'KATEGORI_VAR';
+  end if;
+  v_id := 'k_' || encode(gen_random_bytes(5), 'hex');
+  insert into public.categories (id, name, parent_id, color, sort, edit_token_hash)
+  values (v_id, v_name, p_parent, p_color, 100, public._hash(p_token));
+  return v_id;
+end $$;
+
+-- Ad, üst kategori (boş = ana kategori) ve renk güncellenir. Seviye kuralı: en fazla iki seviye.
+create or replace function public.update_category(
+  p_token text, p_id text, p_name text, p_parent text default null, p_color text default null, p_admin text default null
+) returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+declare v_name text := btrim(p_name);
+begin
+  perform public._check_token(p_token);
+  if not exists (select 1 from public.categories
+                 where id = p_id and (edit_token_hash = public._hash(p_token) or public._is_admin(p_admin))) then
+    raise exception 'YETKISIZ';
+  end if;
+  if char_length(v_name) < 2 or char_length(v_name) > 40 then raise exception 'GECERSIZ_DEGER'; end if;
+  if p_color is not null and p_color !~ '^#[0-9a-fA-F]{6}$' then raise exception 'GECERSIZ_DEGER'; end if;
+  if p_parent is not null then
+    if p_parent = p_id
+       or not exists (select 1 from public.categories where id = p_parent and parent_id is null)
+       or exists (select 1 from public.categories where parent_id = p_id) then
+      raise exception 'KATEGORI_SEVIYE';
+    end if;
+  end if;
+  if exists (select 1 from public.categories
+             where lower(name) = lower(v_name) and parent_id is not distinct from p_parent and id <> p_id) then
+    raise exception 'KATEGORI_VAR';
+  end if;
+  update public.categories set name = v_name, parent_id = p_parent, color = p_color where id = p_id;
+end $$;
+
+create or replace function public.delete_category(p_token text, p_id text, p_admin text default null)
+returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  perform public._check_token(p_token);
+  if not exists (select 1 from public.categories
+                 where id = p_id and (edit_token_hash = public._hash(p_token) or public._is_admin(p_admin))) then
+    raise exception 'YETKISIZ';
+  end if;
+  if exists (select 1 from public.places where category = p_id) then raise exception 'KATEGORI_KULLANIMDA'; end if;
+  if exists (select 1 from public.categories where parent_id = p_id) then raise exception 'KATEGORI_ALT_VAR'; end if;
+  delete from public.categories where id = p_id;
+end $$;
+
 -- ---------------------------------------------------------------- sergi oylaması
 -- Oylama varsayılan olarak KAPALI; yönetici açar/kapatır.
 create or replace function public._voting_open()
@@ -520,6 +621,8 @@ revoke execute on all functions in schema public from public, anon, authenticate
 grant execute on function
   public.code_required(), public.check_code(text), public.check_admin(text),
   public.admin_login(text), public.admin_logout(text),
+  public.add_category(text, text, text, text, text), public.update_category(text, text, text, text, text, text),
+  public.delete_category(text, text, text),
   public.add_place(text, text, text, text, double precision, double precision, text, text, date, text, text, integer, time, text, text),
   public.update_place(text, uuid, text, text, text, text, date, text, text, integer, double precision, double precision, text, time, text, text),
   public.add_comment(text, text, uuid, text, text),

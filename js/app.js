@@ -1,16 +1,31 @@
-import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=17";
+import { api, identity, isDemo, resizeImage, searchAddress, DEFAULT_CATS } from "./api.js?v=18";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const CAT = { dis_mekan: "Dış mekan", ic_mekan: "İç mekan" };
 const STATUS = { onerildi: "Önerildi", cekildi: "Çekildi", iptal: "İptal" };
 const ANKARA = { lat: 39.9208, lng: 32.8541 };
 const BOUNDS = { latMin: 39.0, latMax: 40.8, lngMin: 31.0, lngMax: 34.0 };
 const MAX_PHOTOS = 5;
 
-const state = { places: [], codeRequired: false, cat: "", q: "", status: "aktif", when: "", mine: false, mineP: false, view: "list", detailId: null, bulk: false, sel: new Set() };
+const state = { places: [], cats: DEFAULT_CATS.map((c) => ({ ...c })), codeRequired: false, cat: "", q: "", status: "aktif", when: "", mine: false, mineP: false, view: "list", detailId: null, bulk: false, sel: new Set() };
+
+// ------------------------------------------------------------------ kategoriler (düzenlenebilir, iki seviyeli)
+const safeColor = (c) => (/^#[0-9a-f]{6}$/i.test(c || "") ? c : "");
+const catById = (id) => state.cats.find((c) => c.id === id);
+const catRoots = () => state.cats.filter((c) => !c.parent_id);
+const catChildren = (id) => state.cats.filter((c) => c.parent_id === id);
+function catLabel(id) {
+  const c = catById(id);
+  if (!c) return "Kategorisiz";
+  const p = c.parent_id && catById(c.parent_id);
+  return p ? `${p.name} › ${c.name}` : c.name;
+}
+const catColor = (id) => { const c = catById(id); return safeColor(c?.color) || safeColor(catById(c?.parent_id)?.color) || "#6b7280"; };
+// Seçili kategori bir ana kategoriyse altkategorilerindeki yerler de dahil edilir.
+const inCat = (p, sel) => !sel || p.category === sel || catById(p.category)?.parent_id === sel;
+const canEditCat = (c) => isAdmin() || identity.mine("categories").has(c.id);
 
 // ------------------------------------------------------------------ yardımcılar
 const pad = (n) => String(n).padStart(2, "0");
@@ -107,8 +122,12 @@ function initMap() {
     if (mapNeedsFit && $("#map").clientWidth > 0) { mapNeedsFit = false; render(true); }
   }).observe($("#map"));
 }
-const pinIcon = (cls) => L.divIcon({ className: "pin-wrap", html: `<div class="pin ${cls}"></div>`, iconSize: [26, 26], iconAnchor: [13, 30] });
-const pinClass = (p) => (p.status === "cekildi" ? "cekildi" : p.status === "iptal" ? "iptal" : p.category === "ic_mekan" ? "ic" : "dis");
+// cls "cat" ise pin kategorinin rengiyle çizilir; "cekildi"/"iptal" durum renkleri kategoriden önceliklidir.
+const pinIcon = (cls, color) => L.divIcon({
+  className: "pin-wrap", html: `<div class="pin ${cls}"${cls === "cat" && safeColor(color) ? ` style="background:${safeColor(color)}"` : ""}></div>`,
+  iconSize: [26, 26], iconAnchor: [13, 30],
+});
+const pinClass = (p) => (p.status === "cekildi" ? "cekildi" : p.status === "iptal" ? "iptal" : "cat");
 
 // ------------------------------------------------------------------ filtre + çizim
 function filtered() {
@@ -118,7 +137,7 @@ function filtered() {
   const today = todayStr();
   return state.places.filter((p) => {
     if (state.mineP && !myPlaces.has(p.id)) return false;
-    if (state.cat && p.category !== state.cat) return false;
+    if (!inCat(p, state.cat)) return false;
     if (state.status === "aktif") { if (p.status === "iptal") return false; }
     else if (state.status && p.status !== state.status) return false;
     const isPast = !!p.planned_date && p.planned_date < today;
@@ -148,7 +167,7 @@ function render(fit = false) {
 function renderMap(list, fit) {
   markerLayer.clearLayers();
   for (const p of list) {
-    L.marker([p.lat, p.lng], { icon: pinIcon(pinClass(p)), title: p.name, keyboard: true })
+    L.marker([p.lat, p.lng], { icon: pinIcon(pinClass(p), catColor(p.category)), title: p.name, keyboard: true })
       .on("click", () => openDetail(p.id)).addTo(markerLayer);
   }
   if (fit && list.length && $("#map").clientWidth === 0) mapNeedsFit = true;
@@ -164,12 +183,12 @@ function cardHtml(p) {
   const dd = p.planned_date && p.status === "onerildi" ? daysUntil(p.planned_date) : -1;
   const soon = dd >= 0 && dd <= 7 ? (dd === 0 ? "Bugün" : dd === 1 ? "Yarın" : `${dd} gün sonra`) : "";
   const sel = state.bulk && state.sel.has(p.id);
-  return `<button class="card ${p.category === "ic_mekan" ? "ic" : ""} ${p.status === "iptal" ? "iptal" : ""} ${sel ? "selected" : ""}" data-id="${esc(p.id)}">
+  return `<button class="card ${p.status === "iptal" ? "iptal" : ""} ${sel ? "selected" : ""}" style="border-left-color:${catColor(p.category)}" data-id="${esc(p.id)}">
     <div class="t">${state.bulk ? `<span class="selbox" aria-hidden="true">${sel ? "☑" : "☐"}</span>` : ""}${esc(p.name)}</div>
     <div class="m">
       ${soon ? `<span class="badge soon">${esc(soon)}</span>` : ""}
       ${p.meet_time ? `<span>🕙 ${esc(hhmm(p.meet_time))}</span>` : ""}
-      <span>${esc(CAT[p.category])}${p.district ? " · " + esc(p.district) : ""}</span>
+      <span>${esc(catLabel(p.category))}${p.district ? " · " + esc(p.district) : ""}</span>
       <span>👥 ${esc(cap)} katılımcı</span>
       <span>${esc(p.author_name)}</span>
       ${p.status !== "onerildi" ? `<span class="badge ${esc(p.status)}">${esc(STATUS[p.status])}</span>` : ""}
@@ -207,15 +226,22 @@ function renderList(list) {
 }
 
 // ------------------------------------------------------------------ veri yükleme
-let lastSig = "";
+let lastSig = "", lastCatSig = "";
 async function reload(fit = false, quiet = false) {
   try {
-    const places = await api.listPlaces();
-    const sig = JSON.stringify(places);
+    const [places, cats] = await Promise.all([api.listPlaces(), api.listCategories().catch(() => state.cats)]);
+    const sig = JSON.stringify([places, cats]);
     hideError($("#error-banner"));
     // Arka plan yenilemesinde veri değişmediyse yeniden çizme (kaydırma/odak bozulmasın)
     if (quiet && sig === lastSig) return;
     lastSig = sig; state.places = places;
+    const cs = JSON.stringify(cats);
+    if (cs !== lastCatSig) {
+      lastCatSig = cs; state.cats = cats;
+      if (state.cat && !catById(state.cat)) state.cat = "";
+      renderCatChips();
+      if ($("#dlg-place").open) fillCategorySelect();
+    }
   } catch (e) {
     if (!quiet) showError($("#error-banner"), "Veriler yüklenemedi: " + e.message);
     return;
@@ -291,7 +317,7 @@ function renderPreviews() {
 
 function openPlaceForm(place = null) {
   const f = $("#form-place");
-  f.reset(); hideError($("#place-error")); pendingFiles = []; renderPreviews(); pick = null; editingId = place ? place.id : null; dupAck = "";
+  fillCategorySelect(); f.reset(); hideError($("#place-error")); pendingFiles = []; renderPreviews(); pick = null; editingId = place ? place.id : null; dupAck = "";
   $("#place-title").textContent = place ? "Yeri Düzenle" : "Yer Ekle";
   $("#place-submit").textContent = place ? "Güncelle" : "Kaydet";
   $("#loc-block").hidden = false;
@@ -331,7 +357,7 @@ function placeFormData(f) {
 
 function validatePlace(d, isEdit) {
   if (d.name.length < 2) return "Mekan adı en az 2 karakter olmalı.";
-  if (!CAT[d.category]) return "Kategori seçin (dış mekan / iç mekan).";
+  if (!catById(d.category)) return "Kategori seçin.";
   if (d.planned_date ? !/^\d{4}-\d{2}-\d{2}$/.test(d.planned_date) : !isEdit) return "Önerilen çekim tarihini seçin.";
   if (pick == null || !inBounds(d.lat, d.lng)) return pick == null ? "Haritada konumu işaretleyin." : "Konum Ankara çevresinde olmalı.";
   if (!isEdit && d.author.length < 2) return "Adınızı yazın.";
@@ -425,7 +451,7 @@ function renderDetail(id) {
       <div><span class="badge ${esc(p.status)}">${esc(STATUS[p.status])}</span></div>
       ${photos ? `<div class="gallery">${photos}</div>` : ""}
       <dl class="kv">
-        <dt>Kategori</dt><dd>${esc(CAT[p.category])}</dd>
+        <dt>Kategori</dt><dd>${esc(catLabel(p.category))}</dd>
         <dt>Çekim tarihi</dt><dd>${esc(fmtDate(p.planned_date))}</dd>
         ${p.district ? `<dt>İlçe</dt><dd>${esc(p.district)}</dd>` : ""}
         ${meet ? `<dt>Buluşma</dt><dd>${esc(meet)}</dd>` : ""}
@@ -603,6 +629,118 @@ async function submitAdmin(e) {
 }
 
 // ------------------------------------------------------------------ CSV
+// ------------------------------------------------------------------ kategori filtresi, seçimi ve yönetimi
+function renderCatChips() {
+  const box = $("#cat-chips"); if (!box) return;
+  const active = state.cat, ac = catById(active), activeRoot = ac ? ac.parent_id || ac.id : "";
+  const chip = (c, sub) => `<button type="button" class="chip${sub ? " sub" : ""}${active === c.id ? " active" : ""}" data-cat="${esc(c.id)}"><i class="dot" style="background:${catColor(c.id)}"></i>${esc(c.name)}</button>`;
+  box.innerHTML = `<button type="button" class="chip${active ? "" : " active"}" data-cat="">Tümü</button>` +
+    catRoots().map((r) => chip(r, false) + (r.id === activeRoot ? catChildren(r.id).map((s) => chip(s, true)).join("") : "")).join("");
+}
+
+// Yer formundaki kategori listesi: ana kategoriler ve altlarında "Ana › Alt" biçiminde altkategoriler
+function fillCategorySelect(selected) {
+  const sel = $("#form-place").category;
+  const keep = selected ?? sel.value;
+  const opts = [];
+  for (const r of catRoots()) opts.push(r, ...catChildren(r.id));
+  sel.innerHTML = `<option value="">Seçin…</option>` + opts.map((c) => `<option value="${esc(c.id)}">${esc(catLabel(c.id))}</option>`).join("");
+  sel.value = keep && catById(keep) ? keep : "";
+}
+
+const PALETTE = ["#d9641e", "#2563c9", "#1f8a4c", "#a855f7", "#e11d48", "#0891b2", "#ca8a04", "#6b7280"];
+let catEdit = null; // formdaki taslak: { id|null, name, parent, color, children:Set }
+const newCatDraft = () => ({ id: null, name: "", parent: "", color: PALETTE[state.cats.length % PALETTE.length], children: new Set() });
+
+function openCats() {
+  if (!api.catExt) return toast("Kategori düzenleme henüz etkin değil (schema.sql güncellenmeli).", true);
+  catEdit = newCatDraft(); renderCats(); $("#dlg-cats").showModal();
+}
+
+function renderCats() {
+  const d = catEdit, editing = !!d.id;
+  const hasKids = editing && catChildren(d.id).length > 0;
+  const parents = catRoots().filter((r) => r.id !== d.id);
+  // Bu kategorinin altına alınabilecek adaylar: altı boş ana kategoriler ve zaten bunun altındakiler
+  const cands = state.cats.filter((c) => c.id !== d.id && ((!c.parent_id && !catChildren(c.id).length) || c.parent_id === d.id));
+  const used = (id) => state.places.filter((p) => p.category === id).length;
+  const row = (c, sub) => `<li class="cat-row${sub ? " sub" : ""}"><i class="dot" style="background:${catColor(c.id)}"></i><span class="nm">${esc(c.name)}</span><span class="muted">${used(c.id)} yer</span>${canEditCat(c)
+    ? `<button type="button" class="btn ghost small" data-act="cat-edit" data-id="${esc(c.id)}">Düzenle</button><button type="button" class="btn danger small" data-act="cat-del" data-id="${esc(c.id)}">Sil</button>` : ""}</li>`;
+  $("#cats").innerHTML = `
+    <header class="dlg-head"><h2>Kategoriler</h2><button type="button" class="x" data-close aria-label="Kapat">×</button></header>
+    <div class="dlg-body">
+      <div class="section-title">${editing ? "Kategoriyi düzenle" : "Yeni kategori ekle"}</div>
+      <label>Ad <input id="cat-name" maxlength="40" value="${esc(d.name)}" placeholder="Örn. Tarihi yapılar" autocomplete="off"></label>
+      <div class="row">
+        <label>Üst kategori <select id="cat-parent" ${hasKids ? "disabled" : ""}><option value="">— Ana kategori —</option>${parents.map((r) => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join("")}</select></label>
+        <label>Renk <input id="cat-color" type="color" value="${esc(safeColor(d.color) || "#6b7280")}"></label>
+      </div>
+      ${hasKids ? `<p class="muted"><small>Altkategorisi olduğu için ana kategori olarak kalır. Başka bir kategorinin altına almak için önce altkategorilerini taşıyın.</small></p>` : ""}
+      ${!d.parent && cands.length ? `<div><div class="label">Altına alınacaklar <small class="muted">(işaretlediğiniz kategoriler bunun altkategorisi olur)</small></div>
+        <div class="cat-kids">${cands.map((c) => `<label class="check"><input type="checkbox" data-kid="${esc(c.id)}" ${d.children.has(c.id) ? "checked" : ""} ${canEditCat(c) ? "" : "disabled"}> ${esc(c.name)}</label>`).join("")}</div></div>` : ""}
+      <p id="cat-error" class="form-error" role="alert" hidden></p>
+      <div class="quick">
+        <button type="button" class="btn primary" data-act="cat-save">${editing ? "Güncelle" : "Ekle"}</button>
+        ${editing ? `<button type="button" class="btn ghost" data-act="cat-cancel">Vazgeç</button>` : ""}
+      </div>
+      <div class="section-title">Mevcut kategoriler</div>
+      <ul class="cat-list">${catRoots().map((r) => row(r, false) + catChildren(r.id).map((s) => row(s, true)).join("")).join("")}</ul>
+      <p class="muted"><small>Kendi eklediğiniz kategorileri düzenleyip silebilirsiniz; yönetici hepsini düzenler. İçinde yer olan kategori silinemez.</small></p>
+    </div>`;
+  $("#cat-parent").value = d.parent;
+}
+
+async function refreshCats() {
+  state.cats = await api.listCategories();
+  lastCatSig = JSON.stringify(state.cats);
+  if (state.cat && !catById(state.cat)) state.cat = "";
+  renderCatChips();
+  if ($("#dlg-place").open) fillCategorySelect();
+  render();
+  if ($("#dlg-cats").open) renderCats();
+}
+
+async function saveCat() {
+  const d = catEdit, err = $("#cat-error"); hideError(err);
+  const name = d.name.trim();
+  if (name.length < 2) return showError(err, "Kategori adı en az 2 karakter olmalı.");
+  const color = safeColor(d.color) || null;
+  let id = d.id;
+  if (id) await api.updateCategory(id, { name, parent_id: d.parent || null, color });
+  else {
+    const code = await ensureCode(); if (code === null) return;
+    try { id = await api.addCategory({ name, parent_id: d.parent || null, color }, code); }
+    catch (x) { if (/Davet kodu/.test(x.message)) identity.setCode(""); throw x; }
+  }
+  if (!d.parent) { // ana kategori: işaretlenenleri altına al, işareti kaldırılanları ana kategoriye döndür
+    for (const c of state.cats) {
+      if (c.id === id) continue;
+      const want = d.children.has(c.id), is = c.parent_id === id;
+      if (want !== is) await api.updateCategory(c.id, { name: c.name, parent_id: want ? id : null, color: c.color });
+    }
+  }
+  catEdit = newCatDraft();
+  await refreshCats();
+  toast(d.id ? "Kategori güncellendi" : "Kategori eklendi");
+}
+
+async function onCatsClick(e) {
+  const el = e.target.closest("[data-act]"); if (!el) return;
+  const act = el.dataset.act, id = el.dataset.id;
+  try {
+    if (act === "cat-edit") {
+      const c = catById(id);
+      catEdit = { id, name: c.name, parent: c.parent_id || "", color: safeColor(c.color) || catColor(id), children: new Set(catChildren(id).map((x) => x.id)) };
+      renderCats(); $("#cats .dlg-body").scrollTop = 0;
+    } else if (act === "cat-cancel") { catEdit = newCatDraft(); renderCats(); }
+    else if (act === "cat-save") await saveCat();
+    else if (act === "cat-del") armed(el, "Emin misiniz?", async () => {
+      try { await api.deleteCategory(id); if (catEdit.id === id) catEdit = newCatDraft(); await refreshCats(); toast("Kategori silindi"); }
+      catch (x) { showError($("#cat-error"), x.message); }
+    });
+  } catch (x) { showError($("#cat-error"), x.message); }
+}
+
 // ------------------------------------------------------------------ fotoğraf önizleme (aynı sayfada)
 let lbList = [], lbIdx = 0;
 function showLb() {
@@ -738,7 +876,7 @@ function exportCsv() {
   const safe = (v) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
   const head = ["Tarih", "Saat", "Yer", "Kategori", "İlçe", "Durum", "Ekleyen", "Katılımcı sayısı", "Katılımcılar", "Enlem", "Boylam", "Yol tarifi"];
   const rows = filtered().sort(byDate).map((p) => [
-    p.planned_date || "", hhmm(p.meet_time), p.name, CAT[p.category], p.district, STATUS[p.status], p.author_name, p.attendees.length,
+    p.planned_date || "", hhmm(p.meet_time), p.name, catLabel(p.category), p.district, STATUS[p.status], p.author_name, p.attendees.length,
     p.attendees.map(fullName).join("; "), p.lat, p.lng, dirUrl(p),
   ]);
   const csv = "﻿" + [head, ...rows].map((r) => r.map(safe).join(";")).join("\r\n");
@@ -789,9 +927,23 @@ function bind() {
   };
   $("#btn-admin").onclick = onAdminClick;
   $("#form-admin").addEventListener("submit", submitAdmin);
-  $$(".chip").forEach((c) => (c.onclick = () => {
-    state.cat = c.dataset.cat; $$(".chip").forEach((x) => x.classList.toggle("active", x === c)); render(true);
-  }));
+  $("#cat-chips").addEventListener("click", (e) => {
+    const c = e.target.closest(".chip"); if (!c) return;
+    state.cat = c.dataset.cat; renderCatChips(); render(true);
+  });
+  $("#btn-cats").onclick = openCats;
+  $("#btn-cats-admin").onclick = openCats;
+  $("#cats").addEventListener("click", onCatsClick);
+  $("#cats").addEventListener("input", (e) => {
+    if (!catEdit) return;
+    if (e.target.id === "cat-name") catEdit.name = e.target.value;
+    else if (e.target.id === "cat-color") catEdit.color = e.target.value;
+  });
+  $("#cats").addEventListener("change", (e) => {
+    if (!catEdit) return;
+    if (e.target.id === "cat-parent") { catEdit.parent = e.target.value; renderCats(); }
+    else if (e.target.dataset.kid) { if (e.target.checked) catEdit.children.add(e.target.dataset.kid); else catEdit.children.delete(e.target.dataset.kid); }
+  });
   $("#f-search").oninput = (e) => { state.q = e.target.value; render(); };
   $("#f-status").onchange = (e) => { state.status = e.target.value; render(true); };
   $("#f-when").onchange = (e) => { state.when = e.target.value; render(true); };

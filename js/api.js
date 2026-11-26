@@ -31,7 +31,17 @@ export const identity = {
   setProfile(p) { LS.set("st_profile", p); },
 };
 
+// Kategori tablosu henüz kurulmadıysa (schema.sql çalıştırılmadıysa) kullanılan sabit liste.
+export const DEFAULT_CATS = [
+  { id: "dis_mekan", name: "Dış mekan", parent_id: null, color: "#d9641e", sort: 1 },
+  { id: "ic_mekan", name: "İç mekan", parent_id: null, color: "#2563c9", sort: 2 },
+];
+
 const ERRORS = {
+  KATEGORI_VAR: "Bu adla bir kategori zaten var.",
+  KATEGORI_SEVIYE: "Kategoriler en fazla iki seviyeli olabilir (ana kategori › alt kategori). Altkategorisi olan bir kategori başka bir kategorinin altına alınamaz.",
+  KATEGORI_KULLANIMDA: "Bu kategoride yer var. Önce yerleri başka bir kategoriye taşıyın.",
+  KATEGORI_ALT_VAR: "Bu kategorinin altkategorileri var. Önce onları silin ya da taşıyın.",
   DAVET_KODU_HATALI: "Davet kodu hatalı.",
   COK_FAZLA_ISTEK: "Çok fazla istek geldi, bir dakika sonra tekrar deneyin.",
   YETKISIZ: "Bu kaydı düzenleme yetkiniz yok (başka cihazdan eklenmiş olabilir).",
@@ -75,12 +85,14 @@ const remote = {
     });
   },
   ext2: false,
+  catExt: false, // categories tablosu var mı?
   ext: false, // yeni alanlar (saat, buluşma yeri, pratik bilgi, yorumlar) veritabanında var mı?
   async init() {
     // schema.sql güncel çalıştırılmadıysa yeni özellikler gizlenir, uygulama eskisi gibi çalışır.
     this.ext = await this.request("/rest/v1/places?select=meet_time&limit=1").then(() => true, () => false);
     // Sergi alanları (fotoğrafı çeken, sergi izni, oylama) için ayrı kontrol
     this.ext2 = await this.request("/rest/v1/place_photos?select=photographer&limit=1").then(() => true, () => false);
+    this.catExt = await this.request("/rest/v1/categories?select=id&limit=1").then(() => true, () => false);
     try { return { codeRequired: !!(await this.rpc("code_required", {})) }; } catch { return { codeRequired: false }; }
   },
   checkCode: (code) => remote.rpc("check_code", { p_code: code }),
@@ -138,6 +150,28 @@ const remote = {
       });
     } catch (e) { console.warn("Dosya temizliği başarısız:", e.message); }
   },
+  // ---- Kategoriler
+  async listCategories() {
+    if (!this.catExt) return DEFAULT_CATS;
+    return this.request("/rest/v1/categories?select=id,name,parent_id,color,sort,created_at&order=sort.asc,name.asc");
+  },
+  async addCategory(d, code) {
+    const id = await this.rpc("add_category", {
+      p_code: code || null, p_token: identity.token(), p_name: d.name, p_parent: d.parent_id || null, p_color: d.color || null,
+    });
+    identity.addMine("categories", id);
+    return id;
+  },
+  updateCategory(id, d) {
+    return this.rpc("update_category", {
+      p_token: identity.token(), p_id: id, p_name: d.name, p_parent: d.parent_id || null, p_color: d.color || null,
+      p_admin: identity.admin() || null,
+    });
+  },
+  async deleteCategory(id) {
+    await this.rpc("delete_category", { p_token: identity.token(), p_id: id, p_admin: identity.admin() || null });
+    identity.removeMine("categories", id);
+  },
   async deletePlace(id) {
     const paths = await this.photoPaths("place_id=eq." + id).catch(() => []);
     await this.rpc("delete_place", { p_token: identity.token(), p_id: id, p_admin: identity.admin() || null });
@@ -188,8 +222,32 @@ const remote = {
 
 // ======================================================= Demo (localStorage)
 const demo = {
-  ext: true, ext2: true,
-  db() { return { comments: [], votes: [], ...LS.get("st_demo_db", { places: [], photos: [], attendees: [] }) }; },
+  ext: true, ext2: true, catExt: true,
+  db() { return { comments: [], votes: [], categories: DEFAULT_CATS.map((c) => ({ ...c })), ...LS.get("st_demo_db", { places: [], photos: [], attendees: [] }) }; },
+  async listCategories() { return this.db().categories; },
+  async addCategory(d) {
+    const db = this.db(), name = (d.name || "").trim();
+    if (name.length < 2) throw friendly("GECERSIZ_DEGER");
+    if (d.parent_id && !db.categories.some((c) => c.id === d.parent_id && !c.parent_id)) throw friendly("KATEGORI_SEVIYE");
+    if (db.categories.some((c) => c.name.toLowerCase() === name.toLowerCase() && (c.parent_id || null) === (d.parent_id || null))) throw friendly("KATEGORI_VAR");
+    const id = "k_" + uuid().slice(0, 10);
+    db.categories.push({ id, name, parent_id: d.parent_id || null, color: d.color || null, sort: 100 });
+    this.save(db); identity.addMine("categories", id); return id;
+  },
+  async updateCategory(id, d) {
+    const db = this.db(), c = db.categories.find((x) => x.id === id), name = (d.name || "").trim();
+    if (!c) throw friendly("YETKISIZ");
+    if (name.length < 2) throw friendly("GECERSIZ_DEGER");
+    if (d.parent_id && (d.parent_id === id || !db.categories.some((x) => x.id === d.parent_id && !x.parent_id) || db.categories.some((x) => x.parent_id === id))) throw friendly("KATEGORI_SEVIYE");
+    if (db.categories.some((x) => x.id !== id && x.name.toLowerCase() === name.toLowerCase() && (x.parent_id || null) === (d.parent_id || null))) throw friendly("KATEGORI_VAR");
+    Object.assign(c, { name, parent_id: d.parent_id || null, color: d.color || null }); this.save(db);
+  },
+  async deleteCategory(id) {
+    const db = this.db();
+    if (db.places.some((p) => p.category === id)) throw friendly("KATEGORI_KULLANIMDA");
+    if (db.categories.some((c) => c.parent_id === id)) throw friendly("KATEGORI_ALT_VAR");
+    db.categories = db.categories.filter((c) => c.id !== id); this.save(db); identity.removeMine("categories", id);
+  },
   save(db) {
     try { LS.set("st_demo_db", db); } catch { throw new Error("Demo depolama dolu (fotoğraf çok büyük)."); }
   },
@@ -299,6 +357,11 @@ export const api = {
   setVoting: (open) => impl.setVoting(open),
   setExhibit: (id, status) => impl.setExhibit(id, status),
   addComment: (pid, author, body, code) => impl.addComment(pid, author, body, code),
+  get catExt() { return impl.catExt; },
+  listCategories: () => impl.listCategories(),
+  addCategory: (d, code) => impl.addCategory(d, code),
+  updateCategory: (id, d) => impl.updateCategory(id, d),
+  deleteCategory: (id) => impl.deleteCategory(id),
   deleteComment: (id) => impl.deleteComment(id),
   checkCode: (c) => impl.checkCode(c),
   checkAdmin: (c) => impl.checkAdmin(c),

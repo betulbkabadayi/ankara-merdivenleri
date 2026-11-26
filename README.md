@@ -4,7 +4,8 @@ Ankara'daki dış ve iç mekan merdivenlerini birlikte keşfetmek ve fotoğrafla
 Statik site (GitHub Pages) + Supabase (Postgres + Storage). Giriş yok.
 
 ## Özellikler
-- Yer önerisi: ad, kategori (dış/iç mekan), haritada konum, önerilen çekim tarihi (zorunlu); ilçe, adres, not, kontenjan, fotoğraf (isteğe bağlı, en fazla 5)
+- Yer önerisi: ad, kategori, haritada konum, önerilen çekim tarihi (zorunlu); ilçe, adres, not, kontenjan, fotoğraf (isteğe bağlı, en fazla 5)
+- Düzenlenebilir kategoriler (ana kategori › alt kategori, iki seviye, renkli): herkes yeni kategori ekler, kendi eklediğini düzenler/siler, yönetici hepsini; filtre ve harita pinleri kategori rengini kullanır
 - Herkes herkesin eklediği yerleri harita ve takvim görünümünde görür
 - Buluşma saati/noktası ve pratik bilgiler (ücret, çalışma saati, izin…), her yerin altında yorumlar
 - Detayda **Paylaş**, **Takvime ekle** (.ics ve Google Takvim); listede "Bu hafta" grubu, aynı güne düşen yerler için "Rotayı aç"
