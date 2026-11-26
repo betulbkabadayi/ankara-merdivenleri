@@ -296,7 +296,7 @@ function openPlaceForm(place = null) {
   $("#place-submit").textContent = place ? "Güncelle" : "Kaydet";
   $("#loc-block").hidden = false;
   $$(".ext-only", f).forEach((el) => (el.hidden = !api.ext));
-  $("#photo-wrap").hidden = !!place; $("#photo-previews").hidden = !!place;  $("#status-wrap").hidden = !place;
+  $("#photo-wrap").hidden = !!place; $("#photo-previews").hidden = !!place; $("#photo-consent-wrap").hidden = !!place;  $("#status-wrap").hidden = !place;
   f.author.closest("label").hidden = !!place;
   $("#addr-results").hidden = true;
   if (place) {
@@ -347,6 +347,7 @@ async function submitPlace(e) {
   const d = placeFormData(f);
   const bad = validatePlace(d, !!editingId);
   if (bad) return showError(errBox, bad);
+  if (!editingId && pendingFiles.length && !f.consent.checked) return showError(errBox, "Fotoğraf eklemek için sergide gösterilmesine izin vermeniz gerekiyor. Kutuyu işaretleyin ya da fotoğrafları kaldırın.");
   if (!editingId) {
     const dups = findDuplicates(d), sig = dups.map((x) => x.p.id).join(",");
     if (dups.length && dupAck !== sig) {
@@ -407,7 +408,7 @@ function renderDetail(id) {
     `<li class="${myAtt.has(a.id) ? "me" : ""}">${esc(fullName(a))}${(myAtt.has(a.id) || isAdmin()) ? `<button type="button" data-act="leave" data-id="${esc(a.id)}" title="Katılımdan vazgeç" aria-label="Katılımdan vazgeç">×</button>` : ""}</li>`).join("");
   const dir = dirUrl(p);
   const meet = [hhmm(p.meet_time), p.meet_point].filter(Boolean).join(" · ");
-  const draft = { body: $("#comment-body")?.value || "", name: $("#comment-name")?.value };
+  const draft = { body: $("#comment-body")?.value || "", name: $("#comment-name")?.value, consent: !!$("#photo-consent")?.checked };
   const myCom = identity.mine("comments");
   const comments = (p.place_comments || []).slice().sort((a, b) => a.created_at.localeCompare(b.created_at));
   const commentsHtml = !api.ext ? "" : `
@@ -441,7 +442,8 @@ function renderDetail(id) {
       </div>
       <div class="section-title">Katılacaklar (${n}${p.max_attendees ? "/" + p.max_attendees : ""})</div>
       ${n ? `<ul class="people">${people}</ul>` : `<p class="muted">Henüz kimse katılmadı.</p>`}
-      ${mineP && p.place_photos.length < MAX_PHOTOS ? `<label>Fotoğraf ekle <small class="muted">(en fazla ${MAX_PHOTOS})</small><input type="file" accept="image/*" multiple data-act="add-photos"></label>` : ""}
+      ${mineP && p.place_photos.length < MAX_PHOTOS ? `<label class="check consent"><input id="photo-consent" type="checkbox" ${draft.consent ? "checked" : ""}> Fotoğraflarımın sergide ve sergi oylamasında gösterilmesine izin veriyorum <small class="muted">(zorunlu)</small></label>
+        <label>Fotoğraf ekle <small class="muted">(en fazla ${MAX_PHOTOS})</small><input type="file" accept="image/*" multiple data-act="add-photos"></label>` : ""}
       ${commentsHtml}
       ${mineP ? "" : `<p class="muted"><small>Düzenleme ve silme yalnızca kaydı ekleyen cihazdan veya yönetici modundan yapılabilir.</small></p>`}
       <p id="detail-error" class="form-error" role="alert" hidden></p>
@@ -507,6 +509,7 @@ async function onDetailClick(e) {
 
 async function onDetailChange(e) {
   if (e.target.dataset.act !== "add-photos") return;
+  if (!$("#photo-consent")?.checked) { e.target.value = ""; return showError($("#detail-error"), "Fotoğraf eklemek için sergide gösterilmesine izin vermeniz gerekiyor. Önce kutuyu işaretleyin."); }
   const id = state.detailId, p = state.places.find((x) => x.id === id);
   const files = [...e.target.files].slice(0, MAX_PHOTOS - p.place_photos.length);
   const meta = { photographer: profileName() }; // fotoğraf, yükleyenin adıyla kaydedilir
