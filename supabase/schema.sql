@@ -191,7 +191,7 @@ declare v_id uuid;
 begin
   perform public._check_code(p_code);
   perform public._check_token(p_token);
-  if (select count(*) from public.places where created_at > now() - interval '1 minute') >= 20 then
+  if (select count(*) from public.places where created_at > now() - interval '1 minute') >= 8 then
     raise exception 'COK_FAZLA_ISTEK';
   end if;
   insert into public.places (name, category, lat, lng, district, address, planned_date, notes,
@@ -216,7 +216,7 @@ declare v_id uuid; v_max integer; v_count integer;
 begin
   perform public._check_code(p_code);
   perform public._check_token(p_token);
-  if (select count(*) from public.attendees where created_at > now() - interval '1 minute') >= 60 then
+  if (select count(*) from public.attendees where created_at > now() - interval '1 minute') >= 40 then
     raise exception 'COK_FAZLA_ISTEK';
   end if;
   select max_attendees into v_max from public.places where id = p_place_id;
@@ -232,17 +232,56 @@ exception when unique_violation then
 end $$;
 
 -- ---------------------------------------------------------------- yönetici kodu ve düzenleme işlemleri
--- Yönetici kodu (app_settings.admin_code_hash) her kaydı düzenleyip silebilir.
+-- Yönetici kodu (app_settings.admin_code_hash) yalnızca admin_login ile doğrulanır; başarılı girişte rastgele,
+-- tahmin edilemez bir OTURUM ANAHTARI verilir (30 gün). Diğer tüm işlemler kodu değil bu anahtarı kabul eder.
+-- Böylece kod, deneme sınırı olmayan başka bir yoldan kaba kuvvetle denenemez.
+create table if not exists public.admin_sessions (
+  token_hash text primary key,
+  expires_at timestamptz not null
+);
+create table if not exists public.admin_failures (
+  created_at timestamptz not null default now()
+);
+alter table public.admin_sessions enable row level security;
+alter table public.admin_failures enable row level security;
+revoke all on public.admin_sessions, public.admin_failures from anon, authenticated;
+
 create or replace function public._is_admin(p_admin text)
 returns boolean language plpgsql security definer
 set search_path = public, extensions
 as $$
-declare v_hash text;
 begin
   if p_admin is null or p_admin = '' then return false; end if;
-  select value into v_hash from public.app_settings where key = 'admin_code_hash';
-  return v_hash is not null and public._hash(p_admin) = v_hash;
+  return exists (select 1 from public.admin_sessions
+                 where token_hash = public._hash('adm:' || p_admin) and expires_at > now());
 end $$;
+
+-- Giriş: 10 dakikada en fazla 10 yanlış deneme (tüm istemciler toplamı); aşılırsa herkese COK_FAZLA_ISTEK.
+create or replace function public.admin_login(p_code text)
+returns text language plpgsql security definer
+set search_path = public, extensions
+as $$
+declare v_hash text; v_token text;
+begin
+  if (select count(*) from public.admin_failures where created_at > now() - interval '10 minutes') >= 10 then
+    raise exception 'COK_FAZLA_ISTEK';
+  end if;
+  select value into v_hash from public.app_settings where key = 'admin_code_hash';
+  if p_code is null or v_hash is null or public._hash(p_code) <> v_hash then
+    insert into public.admin_failures default values;
+    delete from public.admin_failures where created_at < now() - interval '1 day';
+    return null;  -- hata fırlatılmaz: kayıt geri alınmasın
+  end if;
+  v_token := encode(gen_random_bytes(24), 'hex');
+  delete from public.admin_sessions where expires_at < now();
+  insert into public.admin_sessions (token_hash, expires_at) values (public._hash('adm:' || v_token), now() + interval '30 days');
+  return v_token;
+end $$;
+
+create or replace function public.admin_logout(p_admin text)
+returns void language sql security definer
+set search_path = public, extensions
+as $$ delete from public.admin_sessions where token_hash = public._hash('adm:' || coalesce(p_admin, '')) $$;
 
 create or replace function public.check_admin(p_admin text)
 returns boolean language sql security definer
@@ -350,7 +389,7 @@ declare v_id uuid;
 begin
   perform public._check_code(p_code);
   perform public._check_token(p_token);
-  if (select count(*) from public.place_comments where created_at > now() - interval '1 minute') >= 60 then
+  if (select count(*) from public.place_comments where created_at > now() - interval '1 minute') >= 30 then
     raise exception 'COK_FAZLA_ISTEK';
   end if;
   if not exists (select 1 from public.places where id = p_place_id) then raise exception 'YER_YOK'; end if;
@@ -425,7 +464,7 @@ begin
   perform public._check_code(p_code);
   perform public._check_token(p_token);
   if not public._voting_open() then raise exception 'OYLAMA_KAPALI'; end if;
-  if (select count(*) from public.photo_votes where created_at > now() - interval '1 minute') >= 300 then
+  if (select count(*) from public.photo_votes where created_at > now() - interval '1 minute') >= 150 then
     raise exception 'COK_FAZLA_ISTEK';
   end if;
   v := public._hash('oy:' || p_token);
@@ -480,6 +519,7 @@ end $$;
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function
   public.code_required(), public.check_code(text), public.check_admin(text),
+  public.admin_login(text), public.admin_logout(text),
   public.add_place(text, text, text, text, double precision, double precision, text, text, date, text, text, integer, time, text, text),
   public.update_place(text, uuid, text, text, text, text, date, text, text, integer, double precision, double precision, text, time, text, text),
   public.add_comment(text, text, uuid, text, text),
@@ -495,9 +535,9 @@ to anon, authenticated;
 
 -- ---------------------------------------------------------------- fotoğraf deposu
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('place-photos', 'place-photos', true, 5242880, array['image/jpeg', 'image/png', 'image/webp'])
+values ('place-photos', 'place-photos', true, 2097152, array['image/jpeg', 'image/png', 'image/webp'])
 on conflict (id) do update
-  set public = true, file_size_limit = 5242880,
+  set public = true, file_size_limit = 2097152,
       allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp'];
 
 drop policy if exists "photos_upload" on storage.objects;
@@ -528,4 +568,6 @@ create policy "photos_delete_orphans" on storage.objects for delete to anon, aut
 --   insert into public.app_settings (key, value)
 --   values ('admin_code_hash', encode(extensions.digest('YONETICI_KODU', 'sha256'), 'hex'))
 --   on conflict (key) do update set value = excluded.value;
+-- Yönetici kodunu değiştirdikten sonra açık yönetici oturumlarını kapatmak için:
+--   delete from public.admin_sessions;
 -- Kodu kaldırmak için:  delete from public.app_settings where key = 'invite_code_hash';

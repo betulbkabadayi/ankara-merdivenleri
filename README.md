@@ -27,10 +27,11 @@ Statik site (GitHub Pages) + Supabase (Postgres + Storage). Giriş yok.
 `config.js` boşsa uygulama **demo modunda** çalışır; veriler yalnızca o tarayıcıda saklanır. `?demo=1` ile de zorlanabilir.
 
 ## Güvenlik modeli
+- Yönetici kodu yalnızca `admin_login` ile doğrulanır (10 dakikada en fazla 10 yanlış deneme); başarılı girişte 30 günlük rastgele oturum anahtarı verilir, kodun kendisi cihazda saklanmaz. Yönetici kodunu değiştirince `delete from public.admin_sessions;` ile açık oturumlar kapatılır.
 - Tablolara anon yalnızca belirli sütunları **okuyabilir** (`edit_token_hash` hiçbir zaman okunamaz).
 - Tüm yazma işlemleri `SECURITY DEFINER` fonksiyonlardan geçer: alan doğrulama, Ankara sınırları, hız sınırı, davet kodu, fotoğraf limiti.
 - Cihaz anahtarı tarayıcıda (`localStorage`) tutulur, veritabanında yalnızca SHA-256 özeti saklanır. Anahtarı kaybeden kullanıcı kaydını düzenleyemez; yönetici Supabase panelinden düzenler/siler.
-- Fotoğraf deposu: 5 MB, yalnızca JPEG/PNG/WebP; yükleme mevcut bir yerin klasörüne yapılabilir.
+- Fotoğraf deposu: 2 MB, yalnızca JPEG/PNG/WebP; yükleme mevcut bir yerin klasörüne yapılabilir.
 
 ## Yönetim
 - Kayıt silmek/düzenlemek: Supabase → Table Editor.

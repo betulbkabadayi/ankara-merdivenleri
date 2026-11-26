@@ -1,4 +1,4 @@
-import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=16";
+import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=17";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -587,17 +587,19 @@ function updateAdminUi() {
   $("#btn-admin").textContent = isAdmin() ? "Yönetici modundan çık" : "Yönetici girişi";
 }
 function onAdminClick() {
-  if (isAdmin()) { identity.setAdmin(""); updateAdminUi(); render(); toast("Yönetici modundan çıkıldı"); return; }
+  if (isAdmin()) { api.adminLogout().catch(() => {}); identity.setAdmin(""); updateAdminUi(); render(); toast("Yönetici modundan çıkıldı"); return; }
   const f = $("#form-admin"); f.reset(); hideError($("#admin-error")); $("#dlg-admin").showModal();
 }
 async function submitAdmin(e) {
   e.preventDefault();
   const code = e.target.code.value.trim(), err = $("#admin-error");
   if (!code) return showError(err, "Kodu girin.");
+  let token;
   try {
-    if (!(await api.checkAdmin(code))) return showError(err, "Yönetici kodu hatalı.");
+    token = await api.adminLogin(code); // kod yalnızca burada doğrulanır; geri dönen rastgele oturum anahtarı saklanır
+    if (!token) return showError(err, "Yönetici kodu hatalı.");
   } catch (x) { return showError(err, x.message); }
-  identity.setAdmin(code); $("#dlg-admin").close(); updateAdminUi(); render(); toast("Yönetici modu açık");
+  identity.setAdmin(token); $("#dlg-admin").close(); updateAdminUi(); render(); toast("Yönetici modu açık");
 }
 
 // ------------------------------------------------------------------ CSV

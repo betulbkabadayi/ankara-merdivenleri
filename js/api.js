@@ -84,7 +84,9 @@ const remote = {
     try { return { codeRequired: !!(await this.rpc("code_required", {})) }; } catch { return { codeRequired: false }; }
   },
   checkCode: (code) => remote.rpc("check_code", { p_code: code }),
-  checkAdmin: (code) => remote.rpc("check_admin", { p_admin: code }),
+  checkAdmin: (token) => remote.rpc("check_admin", { p_admin: token }), // oturum anahtarı geçerli mi?
+  adminLogin: (code) => remote.rpc("admin_login", { p_code: code }),
+  adminLogout: () => remote.rpc("admin_logout", { p_admin: identity.admin() || null }),
   listPlaces() {
     const sel = "id,name,category,lat,lng,district,address,planned_date,notes,status,max_attendees,author_name,created_at," +
       (this.ext ? "meet_time,meet_point,info,place_comments(id,author_name,body,created_at)," : "") +
@@ -194,6 +196,8 @@ const demo = {
   async init() { return { codeRequired: false }; },
   async checkCode() { return true; },
   async checkAdmin() { return false; },
+  async adminLogin() { return null; },
+  async adminLogout() {},
   async listPlaces() {
     const db = this.db();
     return db.places.map((p) => ({
@@ -298,6 +302,8 @@ export const api = {
   deleteComment: (id) => impl.deleteComment(id),
   checkCode: (c) => impl.checkCode(c),
   checkAdmin: (c) => impl.checkAdmin(c),
+  adminLogin: (c) => impl.adminLogin(c),
+  adminLogout: () => impl.adminLogout(),
   listPlaces: () => impl.listPlaces(),
   addPlace: (d, code) => impl.addPlace(d, code),
   updatePlace: (id, d) => impl.updatePlace(id, d),
