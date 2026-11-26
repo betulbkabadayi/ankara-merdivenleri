@@ -400,8 +400,8 @@ function renderDetail(id) {
   const joined = p.attendees.some((a) => myAtt.has(a.id)); // bu cihazdan zaten katılım var
   const photos = p.place_photos.map((ph) => {
     const url = api.photoUrl(ph.path);
-    const img = `<img src="${esc(url)}" alt="${esc(p.name)} fotoğrafı" title="${esc(ph.photographer && !hideNames() ? "Fotoğraf: " + ph.photographer : "")}" loading="lazy">`;
-    return `<div class="thumb">${isDemo ? img : `<a href="${esc(url)}" target="_blank" rel="noopener">${img}</a>`}
+    const img = `<img src="${esc(url)}" alt="${esc(p.name)} fotoğrafı" title="${esc(ph.photographer && !hideNames() ? "Fotoğraf: " + ph.photographer : "")}" data-zoom="${esc(url)}" loading="lazy">`;
+    return `<div class="thumb">${img}
       ${mineP ? `<button type="button" data-act="del-photo" data-id="${esc(ph.id)}" aria-label="Fotoğrafı sil">×</button>` : ""}</div>`;
   }).join("");
   const people = p.attendees.map((a) =>
@@ -601,6 +601,22 @@ async function submitAdmin(e) {
 }
 
 // ------------------------------------------------------------------ CSV
+// ------------------------------------------------------------------ fotoğraf önizleme (aynı sayfada)
+let lbList = [], lbIdx = 0;
+function showLb() {
+  const x = lbList[lbIdx], multi = lbList.length > 1;
+  $("#lightbox-img").src = x.src; $("#lightbox-img").alt = x.alt;
+  $("#lb-count").textContent = multi ? `${lbIdx + 1} / ${lbList.length}` : "";
+  $("#lb-prev").hidden = !multi; $("#lb-next").hidden = !multi;
+}
+function lbStep(d) { lbIdx = (lbIdx + d + lbList.length) % lbList.length; showLb(); }
+function openLightbox(img) {
+  const scope = img.closest(".gallery, .expo-grid") || img.parentElement;
+  lbList = [...scope.querySelectorAll("img[data-zoom]")].map((i) => ({ src: i.dataset.zoom, alt: i.alt }));
+  lbIdx = Math.max(0, lbList.findIndex((x) => x.src === img.dataset.zoom));
+  showLb(); $("#dlg-lightbox").showModal();
+}
+
 // ------------------------------------------------------------------ sergi seçkisi + gizli oylama
 // Oy veren kimse saklanmaz. Oy sayılarını yönetici her zaman, diğerleri yalnızca oylama kapalıyken görür.
 const expo = { filter: "all", open: false, limit: 10, mine: new Set(), counts: {} };
@@ -639,10 +655,10 @@ function renderExpo() {
   const left = expo.limit - expo.mine.size;
   const chip = (k, label) => `<button type="button" class="chip ${F === k ? "active" : ""}" data-f="${k}">${label}</button>`;
   const card = (x) => {
-    const url = api.photoUrl(x.path), img = `<img src="${esc(url)}" alt="${hideNames() ? "Sergi fotoğrafı" : esc(x.place.name)}" loading="lazy">`;
+    const url = api.photoUrl(x.path), img = `<img src="${esc(url)}" alt="${hideNames() ? "Sergi fotoğrafı" : esc(x.place.name)}" data-zoom="${esc(url)}" loading="lazy">`;
     const voted = expo.mine.has(x.id);
     return `<div class="ph ${esc(x.exhibit || "")}">
-      ${isDemo ? img : `<a href="${esc(url)}" target="_blank" rel="noopener">${img}</a>`}
+      ${img}
       ${hideNames() ? "" : `<div class="cap"><b>${esc(x.photographer || "Çeken belirtilmemiş")}</b>
         <span class="muted">${esc(x.place.name)}${x.place.district ? " · " + esc(x.place.district) : ""}</span>
         ${x.exhibit === "secildi" ? `<span class="badge cekildi">Sergide</span>` : (x.exhibit === "aday" && isAdmin() ? `<span class="badge mine">Aday</span>` : "")}
@@ -741,6 +757,14 @@ function bind() {
   $("#btn-csv").onclick = exportCsv;
   $("#btn-json").onclick = exportJson;
   $("#btn-expo").onclick = openExpo;
+  // Fotoğrafa dokununca aynı sayfada büyük önizleme (yeni sekme açılmaz)
+  document.addEventListener("click", (e) => { const i = e.target.closest("img[data-zoom]"); if (i) openLightbox(i); });
+  const lb = $("#dlg-lightbox");
+  $("#lb-prev").onclick = () => lbStep(-1);
+  $("#lb-next").onclick = () => lbStep(1);
+  lb.addEventListener("click", (e) => { if (e.target === lb || e.target.id === "lb-stage") lb.close(); });
+  lb.addEventListener("keydown", (e) => { if (e.key === "ArrowLeft") lbStep(-1); else if (e.key === "ArrowRight") lbStep(1); });
+  lb.addEventListener("close", () => { $("#lightbox-img").removeAttribute("src"); });
   $("#expo").addEventListener("click", onExpoClick);
   $("#btn-bulk").onclick = () => setBulk(!state.bulk);
   $("#b-all").onclick = () => { filtered().forEach((p) => state.sel.add(p.id)); updateBulkUi(); render(); };
