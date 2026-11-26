@@ -400,7 +400,7 @@ function renderDetail(id) {
   const joined = p.attendees.some((a) => myAtt.has(a.id)); // bu cihazdan zaten katılım var
   const photos = p.place_photos.map((ph) => {
     const url = api.photoUrl(ph.path);
-    const img = `<img src="${esc(url)}" alt="${esc(p.name)} fotoğrafı" title="${esc(ph.photographer ? "Fotoğraf: " + ph.photographer : "")}" loading="lazy">`;
+    const img = `<img src="${esc(url)}" alt="${esc(p.name)} fotoğrafı" title="${esc(ph.photographer && !hideNames() ? "Fotoğraf: " + ph.photographer : "")}" loading="lazy">`;
     return `<div class="thumb">${isDemo ? img : `<a href="${esc(url)}" target="_blank" rel="noopener">${img}</a>`}
       ${mineP ? `<button type="button" data-act="del-photo" data-id="${esc(ph.id)}" aria-label="Fotoğrafı sil">×</button>` : ""}</div>`;
   }).join("");
@@ -605,6 +605,8 @@ async function submitAdmin(e) {
 // Oy veren kimse saklanmaz. Oy sayılarını yönetici her zaman, diğerleri yalnızca oylama kapalıyken görür.
 const EXPO_MAX_VOTES = 10;
 const expo = { filter: "all", open: false, mine: new Set(), counts: {} };
+// Oylama sürerken fotoğrafı çeken kişinin adı gizlenir (yönetici hariç); oylama kapanınca görünür.
+const hideNames = () => expo.open && !isAdmin();
 
 const expoPhotos = () => state.places.flatMap((p) => p.place_photos.filter((ph) => ph.consent).map((ph) => ({ ...ph, place: p })));
 
@@ -633,7 +635,7 @@ function renderExpo() {
     const voted = expo.mine.has(x.id);
     return `<div class="ph ${esc(x.exhibit || "")}">
       ${isDemo ? img : `<a href="${esc(url)}" target="_blank" rel="noopener">${img}</a>`}
-      <div class="cap"><b>${esc(x.photographer || "Çeken belirtilmemiş")}</b>
+      <div class="cap">${hideNames() ? "" : `<b>${esc(x.photographer || "Çeken belirtilmemiş")}</b>`}
         <span class="muted">${esc(x.place.name)}${x.place.district ? " · " + esc(x.place.district) : ""}</span>
         ${x.exhibit === "secildi" ? `<span class="badge cekildi">Sergide</span>` : (x.exhibit === "aday" && isAdmin() ? `<span class="badge mine">Aday</span>` : "")}
       </div>
@@ -835,6 +837,7 @@ function bind() {
   updateAdminUi();
   initMap(); bind();
   const info = await api.init(); state.codeRequired = info.codeRequired;
+  if (api.ext2) expo.open = await api.votingOpen();
   if (isAdmin() && !(await api.checkAdmin(identity.admin()).catch(() => true))) { identity.setAdmin(""); updateAdminUi(); }
   await reload(true);
   const m = location.hash.match(/^#yer=([0-9a-f-]{36})$/i);
