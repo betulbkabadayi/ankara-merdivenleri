@@ -264,8 +264,8 @@ export const api = {
   photoUrl: (p) => impl.photoUrl(p),
 };
 
-// ---- Fotoğraf küçültme (1600 px, JPEG)
-export async function resizeImage(file, maxSide = isDemo ? 640 : 1600, quality = 0.82) {
+// ---- Fotoğraf küçültme (1200 px, JPEG)
+export async function resizeImage(file, maxSide = isDemo ? 640 : 1200, quality = 0.82) {
   const bmp = await createImageBitmap(file, { imageOrientation: "from-image" }).catch(() => null);
   if (!bmp) throw new Error("Bu fotoğraf okunamadı: " + file.name);
   const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
