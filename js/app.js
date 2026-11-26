@@ -1,4 +1,4 @@
-import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=14";
+import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=15";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -296,7 +296,7 @@ function openPlaceForm(place = null) {
   $("#place-submit").textContent = place ? "Güncelle" : "Kaydet";
   $("#loc-block").hidden = false;
   $$(".ext-only", f).forEach((el) => (el.hidden = !api.ext));
-  $("#photo-wrap").hidden = !!place; $("#photo-previews").hidden = !!place;
+  $("#photo-wrap").hidden = !!place; $("#photo-previews").hidden = !!place; $("#photo-meta").hidden = !!place || !api.ext2;
   $("#status-wrap").hidden = !place;
   f.author.closest("label").hidden = !!place;
   $("#addr-results").hidden = true;
@@ -373,7 +373,9 @@ async function submitPlace(e) {
     let failed = 0;
     for (let i = 0; i < pendingFiles.length; i++) {
       btn.textContent = `Fotoğraf ${i + 1}/${pendingFiles.length}…`;
-      try { await api.addPhoto(id, await resizeImage(pendingFiles[i])); } catch (err) { failed++; console.warn(err); }
+      try {
+        await api.addPhoto(id, await resizeImage(pendingFiles[i]), { photographer: f.photographer.value.trim() || d.author, consent: f.consent.checked });
+      } catch (err) { failed++; console.warn(err); }
     }
     $("#dlg-place").close();
     toast(failed ? `Yer eklendi, ${failed} fotoğraf yüklenemedi.` : "Yer eklendi, teşekkürler!", !!failed);
@@ -398,7 +400,7 @@ function renderDetail(id) {
   const joined = p.attendees.some((a) => myAtt.has(a.id)); // bu cihazdan zaten katılım var
   const photos = p.place_photos.map((ph) => {
     const url = api.photoUrl(ph.path);
-    const img = `<img src="${esc(url)}" alt="${esc(p.name)} fotoğrafı" loading="lazy">`;
+    const img = `<img src="${esc(url)}" alt="${esc(p.name)} fotoğrafı" title="${esc(ph.photographer ? "Fotoğraf: " + ph.photographer : "")}" loading="lazy">`;
     return `<div class="thumb">${isDemo ? img : `<a href="${esc(url)}" target="_blank" rel="noopener">${img}</a>`}
       ${mineP ? `<button type="button" data-act="del-photo" data-id="${esc(ph.id)}" aria-label="Fotoğrafı sil">×</button>` : ""}</div>`;
   }).join("");
@@ -406,7 +408,7 @@ function renderDetail(id) {
     `<li class="${myAtt.has(a.id) ? "me" : ""}">${esc(fullName(a))}${(myAtt.has(a.id) || isAdmin()) ? `<button type="button" data-act="leave" data-id="${esc(a.id)}" title="Katılımdan vazgeç" aria-label="Katılımdan vazgeç">×</button>` : ""}</li>`).join("");
   const dir = dirUrl(p);
   const meet = [hhmm(p.meet_time), p.meet_point].filter(Boolean).join(" · ");
-  const draft = { body: $("#comment-body")?.value || "", name: $("#comment-name")?.value };
+  const draft = { body: $("#comment-body")?.value || "", name: $("#comment-name")?.value, by: $("#photo-by")?.value, consent: !!$("#photo-consent")?.checked };
   const myCom = identity.mine("comments");
   const comments = (p.place_comments || []).slice().sort((a, b) => a.created_at.localeCompare(b.created_at));
   const commentsHtml = !api.ext ? "" : `
@@ -440,7 +442,9 @@ function renderDetail(id) {
       </div>
       <div class="section-title">Katılacaklar (${n}${p.max_attendees ? "/" + p.max_attendees : ""})</div>
       ${n ? `<ul class="people">${people}</ul>` : `<p class="muted">Henüz kimse katılmadı.</p>`}
-      ${mineP && p.place_photos.length < MAX_PHOTOS ? `<label>Fotoğraf ekle <small class="muted">(en fazla ${MAX_PHOTOS})</small><input type="file" accept="image/*" multiple data-act="add-photos"></label>` : ""}
+      ${mineP && p.place_photos.length < MAX_PHOTOS ? `${api.ext2 ? `<label>Fotoğrafı çeken <input id="photo-by" maxlength="60" placeholder="Ad Soyad" value="${esc(draft.by ?? profileName())}"></label>
+        <label class="check consent"><input id="photo-consent" type="checkbox" ${draft.consent ? "checked" : ""}> Sergide ve sergi oylamasında gösterilmesine izin veriyorum</label>` : ""}
+        <label>Fotoğraf ekle <small class="muted">(en fazla ${MAX_PHOTOS})</small><input type="file" accept="image/*" multiple data-act="add-photos"></label>` : ""}
       ${commentsHtml}
       ${mineP ? "" : `<p class="muted"><small>Düzenleme ve silme yalnızca kaydı ekleyen cihazdan veya yönetici modundan yapılabilir.</small></p>`}
       <p id="detail-error" class="form-error" role="alert" hidden></p>
@@ -508,8 +512,9 @@ async function onDetailChange(e) {
   if (e.target.dataset.act !== "add-photos") return;
   const id = state.detailId, p = state.places.find((x) => x.id === id);
   const files = [...e.target.files].slice(0, MAX_PHOTOS - p.place_photos.length);
+  const meta = { photographer: $("#photo-by")?.value.trim() || profileName(), consent: !!$("#photo-consent")?.checked };
   let failed = 0;
-  for (const f of files) { try { await api.addPhoto(id, await resizeImage(f)); } catch (x) { failed++; showError($("#detail-error"), x.message); } }
+  for (const f of files) { try { await api.addPhoto(id, await resizeImage(f), meta); } catch (x) { failed++; showError($("#detail-error"), x.message); } }
   await reload();
   if (!failed) toast("Fotoğraf eklendi");
 }
@@ -596,6 +601,94 @@ async function submitAdmin(e) {
 }
 
 // ------------------------------------------------------------------ CSV
+// ------------------------------------------------------------------ sergi seçkisi + gizli oylama
+// Oy veren kimse saklanmaz. Oy sayılarını yönetici her zaman, diğerleri yalnızca oylama kapalıyken görür.
+const EXPO_MAX_VOTES = 10;
+const expo = { filter: "all", open: false, mine: new Set(), counts: {} };
+
+const expoPhotos = () => state.places.flatMap((p) => p.place_photos.filter((ph) => ph.consent).map((ph) => ({ ...ph, place: p })));
+
+async function openExpo() {
+  if (!api.ext2) return toast("Sergi özellikleri henüz etkin değil (schema.sql güncellenmeli).", true);
+  $("#expo").innerHTML = `<header class="dlg-head"><h2>Sergi seçkisi</h2><button type="button" class="x" data-close aria-label="Kapat">×</button></header><div class="dlg-body"><p class="muted">Yükleniyor…</p></div>`;
+  $("#dlg-expo").showModal();
+  await refreshExpo();
+}
+async function refreshExpo() {
+  await reload(false, true);
+  const [open, mine, counts] = await Promise.all([api.votingOpen(), api.myVotes(), api.voteCounts()]);
+  expo.open = open; expo.mine = new Set(mine); expo.counts = counts;
+  renderExpo();
+}
+function renderExpo() {
+  const showCounts = isAdmin() || !expo.open;
+  const votes = (x) => expo.counts[x.id] || 0;
+  const F = expo.filter;
+  const list = expoPhotos().filter((x) => F === "all" ? true : F === "aday" ? x.exhibit === "aday" : F === "secildi" ? x.exhibit === "secildi" : expo.mine.has(x.id));
+  if (showCounts) list.sort((a, b) => votes(b) - votes(a));
+  const left = EXPO_MAX_VOTES - expo.mine.size;
+  const chip = (k, label) => `<button type="button" class="chip ${F === k ? "active" : ""}" data-f="${k}">${label}</button>`;
+  const card = (x) => {
+    const url = api.photoUrl(x.path), img = `<img src="${esc(url)}" alt="${esc(x.place.name)}" loading="lazy">`;
+    const voted = expo.mine.has(x.id);
+    return `<div class="ph ${esc(x.exhibit || "")}">
+      ${isDemo ? img : `<a href="${esc(url)}" target="_blank" rel="noopener">${img}</a>`}
+      <div class="cap"><b>${esc(x.photographer || "Çeken belirtilmemiş")}</b>
+        <span class="muted">${esc(x.place.name)}${x.place.district ? " · " + esc(x.place.district) : ""}</span>
+        ${x.exhibit === "secildi" ? `<span class="badge cekildi">Sergide</span>` : (x.exhibit === "aday" && isAdmin() ? `<span class="badge mine">Aday</span>` : "")}
+      </div>
+      <div class="acts">
+        ${expo.open ? `<button type="button" class="btn ghost ${voted ? "on" : ""}" data-act="vote" data-id="${esc(x.id)}">${voted ? "♥ Oyumu geri al" : "♡ Oy ver"}</button>` : ""}
+        ${isAdmin() ? ["aday", "secildi"].map((v) => `<button type="button" class="btn ghost flag ${x.exhibit === v ? "on" : ""}" data-act="flag" data-id="${esc(x.id)}" data-v="${v}">${v === "aday" ? "Aday" : "Seçildi"}</button>`).join("") : ""}
+        ${showCounts ? `<span class="votes">${votes(x)} oy</span>` : ""}
+      </div></div>`;
+  };
+  $("#expo").innerHTML = `
+    <header class="dlg-head"><h2>Sergi seçkisi</h2><button type="button" class="x" data-close aria-label="Kapat">×</button></header>
+    <div class="dlg-body">
+      <div class="expo-bar">
+        <div class="grow">${expo.open
+          ? `<b>Oylama açık</b> · kalan oy: ${left}/${EXPO_MAX_VOTES}<br><span class="muted">Oyunuz gizlidir; kimin oy verdiği kaydedilmez.</span>`
+          : `<b>Oylama kapalı</b><br><span class="muted">Sonuçlar aşağıda görünür.</span>`}</div>
+        ${isAdmin() ? `<button type="button" class="btn ghost" data-act="toggle-voting">${expo.open ? "Oylamayı kapat" : "Oylamayı aç"}</button>
+          <button type="button" class="btn ghost" data-act="expo-csv">Seçilenleri CSV indir</button>` : ""}
+      </div>
+      <div class="chips">${chip("all", "Hepsi")}${chip("mine", "Oy verdiklerim")}${chip("secildi", "Sergide")}${isAdmin() ? chip("aday", "Adaylar") : ""}</div>
+      ${list.length ? `<div class="expo-grid">${list.map(card).join("")}</div>`
+        : `<p class="muted">${expoPhotos().length ? "Bu filtreye uyan fotoğraf yok." : "Henüz sergi izni verilmiş fotoğraf yok. Fotoğraf eklerken “sergide gösterilmesine izin veriyorum” kutusunu işaretleyin."}</p>`}
+    </div>`;
+}
+async function onExpoClick(e) {
+  const el = e.target.closest("[data-act],[data-f]"); if (!el) return;
+  if (el.dataset.f) { expo.filter = el.dataset.f; return renderExpo(); }
+  const act = el.dataset.act, id = el.dataset.id;
+  try {
+    if (act === "vote") {
+      const on = !expo.mine.has(id);
+      const code = on ? await ensureCode() : "";
+      if (code === null) return;
+      try { await api.vote(id, on, code); } catch (x) { if (/Davet kodu/.test(x.message)) identity.setCode(""); throw x; }
+      if (on) expo.mine.add(id); else expo.mine.delete(id);
+      renderExpo(); toast(on ? "Oyunuz kaydedildi" : "Oyunuz geri alındı");
+    } else if (act === "flag") {
+      const cur = expoPhotos().find((x) => x.id === id)?.exhibit;
+      await api.setExhibit(id, cur === el.dataset.v ? null : el.dataset.v); await refreshExpo();
+    } else if (act === "toggle-voting") {
+      await api.setVoting(!expo.open); await refreshExpo(); toast(expo.open ? "Oylama açıldı" : "Oylama kapatıldı");
+    } else if (act === "expo-csv") exportExpoCsv();
+  } catch (x) { toast(x.message, true); }
+}
+function exportExpoCsv() {
+  const chosen = expoPhotos().filter((x) => x.exhibit === "secildi").sort((a, b) => (expo.counts[b.id] || 0) - (expo.counts[a.id] || 0));
+  if (!chosen.length) return toast("Henüz “Seçildi” işaretli fotoğraf yok.", true);
+  const safe = (v) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
+  const head = ["Fotoğrafı çeken", "Yer", "İlçe", "Çekim tarihi", "Oy", "Fotoğraf adresi"];
+  const rows = chosen.map((x) => [x.photographer || "", x.place.name, x.place.district || "", x.place.planned_date || "", expo.counts[x.id] ?? "", isDemo ? "" : api.photoUrl(x.path)]);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + [head, ...rows].map((r) => r.map(safe).join(";")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
+  a.download = `sergi-secimi-${todayStr()}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 // Tüm veriyi (filtreden bağımsız; katılımcı, yorum ve fotoğraf adresleri dahil) JSON yedeği olarak indirir
 function exportJson() {
   const data = {
@@ -631,6 +724,8 @@ function bind() {
   $("#btn-add").onclick = () => openPlaceForm();
   $("#btn-csv").onclick = exportCsv;
   $("#btn-json").onclick = exportJson;
+  $("#btn-expo").onclick = openExpo;
+  $("#expo").addEventListener("click", onExpoClick);
   $("#btn-bulk").onclick = () => setBulk(!state.bulk);
   $("#b-all").onclick = () => { filtered().forEach((p) => state.sel.add(p.id)); updateBulkUi(); render(); };
   $("#b-past").onclick = () => {

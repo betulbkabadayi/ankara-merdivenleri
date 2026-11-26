@@ -40,6 +40,9 @@ const ERRORS = {
   ZATEN_KATILIYOR: "Bu isimle zaten katılım kaydı var.",
   FOTOGRAF_LIMITI: "Bir yere en fazla 5 fotoğraf eklenebilir.",
   YER_YOK: "Bu yer artık yok.",
+  OYLAMA_KAPALI: "Oylama şu an kapalı.",
+  OY_LIMITI: "En fazla 10 fotoğrafa oy verebilirsiniz. Önce bir oyunuzu geri alın.",
+  FOTOGRAF_YOK: "Bu fotoğraf artık yok ya da sergi izni verilmemiş.",
 };
 function friendly(msg) {
   for (const k of Object.keys(ERRORS)) if (msg && msg.includes(k)) return new Error(ERRORS[k]);
@@ -69,10 +72,13 @@ const remote = {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args),
     });
   },
+  ext2: false,
   ext: false, // yeni alanlar (saat, buluşma yeri, pratik bilgi, yorumlar) veritabanında var mı?
   async init() {
     // schema.sql güncel çalıştırılmadıysa yeni özellikler gizlenir, uygulama eskisi gibi çalışır.
     this.ext = await this.request("/rest/v1/places?select=meet_time&limit=1").then(() => true, () => false);
+    // Sergi alanları (fotoğrafı çeken, sergi izni, oylama) için ayrı kontrol
+    this.ext2 = await this.request("/rest/v1/place_photos?select=photographer&limit=1").then(() => true, () => false);
     try { return { codeRequired: !!(await this.rpc("code_required", {})) }; } catch { return { codeRequired: false }; }
   },
   checkCode: (code) => remote.rpc("check_code", { p_code: code }),
@@ -80,7 +86,7 @@ const remote = {
   listPlaces() {
     const sel = "id,name,category,lat,lng,district,address,planned_date,notes,status,max_attendees,author_name,created_at," +
       (this.ext ? "meet_time,meet_point,info,place_comments(id,author_name,body,created_at)," : "") +
-      "place_photos(id,path),attendees(id,first_name,last_name,created_at)";
+      `place_photos(id,path${this.ext2 ? ",photographer,consent,exhibit" : ""}),attendees(id,first_name,last_name,created_at)`;
     return this.request("/rest/v1/places?select=" + encodeURIComponent(sel) + "&order=planned_date.asc.nullslast,created_at.asc");
   },
   async addPlace(d, code) {
@@ -134,13 +140,28 @@ const remote = {
     identity.removeMine("places", id);
     await this.removeFiles(paths);
   },
-  async addPhoto(placeId, blob) {
+  async addPhoto(placeId, blob, meta = {}) {
     const path = `${placeId}/${uuid()}.jpg`;
     await this.request(`/storage/v1/object/place-photos/${path}`, {
       method: "POST", headers: { "Content-Type": blob.type || "image/jpeg", "x-upsert": "false" }, body: blob,
     });
-    await this.rpc("add_photo", { p_token: identity.token(), p_place_id: placeId, p_path: path, p_admin: identity.admin() || null });
+    await this.rpc("add_photo", {
+      p_token: identity.token(), p_place_id: placeId, p_path: path, p_admin: identity.admin() || null,
+      ...(this.ext2 ? { p_photographer: meta.photographer || null, p_consent: !!meta.consent } : {}),
+    });
   },
+  // ---- Sergi oylaması (gizli oy: sunucu oy verenin kimliğini saklamaz)
+  votingOpen: () => remote.rpc("voting_status", {}).then((v) => !!v, () => false),
+  myVotes: () => remote.rpc("my_votes", { p_token: identity.token() }).catch(() => []),
+  async voteCounts() {
+    const rows = await this.rpc("vote_counts", { p_admin: identity.admin() || null }).catch(() => []);
+    return Object.fromEntries(rows.map((r) => [r.photo_id, Number(r.votes)]));
+  },
+  async vote(photoId, on, code) {
+    await this.rpc("vote_photo", { p_code: code || null, p_token: identity.token(), p_photo_id: photoId, p_on: on });
+  },
+  setVoting: (open) => remote.rpc("set_voting", { p_admin: identity.admin() || null, p_open: open }),
+  setExhibit: (photoId, status) => remote.rpc("set_photo_exhibit", { p_admin: identity.admin() || null, p_photo_id: photoId, p_status: status || null }),
   async deletePhoto(photoId) {
     const paths = await this.photoPaths("id=eq." + photoId).catch(() => []);
     await this.rpc("delete_photo", { p_token: identity.token(), p_photo_id: photoId, p_admin: identity.admin() || null });
@@ -162,8 +183,8 @@ const remote = {
 
 // ======================================================= Demo (localStorage)
 const demo = {
-  ext: true,
-  db() { return { comments: [], ...LS.get("st_demo_db", { places: [], photos: [], attendees: [] }) }; },
+  ext: true, ext2: true,
+  db() { return { comments: [], votes: [], ...LS.get("st_demo_db", { places: [], photos: [], attendees: [] }) }; },
   save(db) {
     try { LS.set("st_demo_db", db); } catch { throw new Error("Demo depolama dolu (fotoğraf çok büyük)."); }
   },
@@ -219,13 +240,25 @@ const demo = {
     db.comments = db.comments.filter((x) => x.place_id !== id);
     this.save(db); identity.removeMine("places", id);
   },
-  async addPhoto(placeId, blob) {
+  async addPhoto(placeId, blob, meta = {}) {
     const db = this.db();
     if (db.photos.filter((x) => x.place_id === placeId).length >= 5) throw friendly("FOTOGRAF_LIMITI");
     const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
-    db.photos.push({ id: uuid(), place_id: placeId, path: dataUrl });
+    db.photos.push({ id: uuid(), place_id: placeId, path: dataUrl, photographer: meta.photographer || null, consent: !!meta.consent, exhibit: null });
     this.save(db);
   },
+  // Demo: tek kullanıcı; oylama her zaman açık, sonuçlar yalnızca oylama kapalıyken görünürdü (demoda gizli).
+  async votingOpen() { return true; },
+  async myVotes() { return this.db().votes; },
+  async voteCounts() { return {}; },
+  async vote(photoId, on) {
+    const db = this.db(), has = db.votes.includes(photoId);
+    if (on && !has) { if (db.votes.length >= 10) throw friendly("OY_LIMITI"); db.votes.push(photoId); }
+    if (!on) db.votes = db.votes.filter((x) => x !== photoId);
+    this.save(db);
+  },
+  async setVoting() {},
+  async setExhibit() {},
   async deletePhoto(photoId) { const db = this.db(); db.photos = db.photos.filter((x) => x.id !== photoId); this.save(db); },
   async addAttendee(placeId, first, last) {
     const db = this.db(); const p = db.places.find((x) => x.id === placeId);
@@ -249,6 +282,13 @@ const impl = isDemo ? demo : remote;
 export const api = {
   init: () => impl.init(),
   get ext() { return impl.ext; },
+  get ext2() { return impl.ext2; },
+  votingOpen: () => impl.votingOpen(),
+  myVotes: () => impl.myVotes(),
+  voteCounts: () => impl.voteCounts(),
+  vote: (id, on, code) => impl.vote(id, on, code),
+  setVoting: (open) => impl.setVoting(open),
+  setExhibit: (id, status) => impl.setExhibit(id, status),
   addComment: (pid, author, body, code) => impl.addComment(pid, author, body, code),
   deleteComment: (id) => impl.deleteComment(id),
   checkCode: (c) => impl.checkCode(c),
@@ -257,7 +297,7 @@ export const api = {
   addPlace: (d, code) => impl.addPlace(d, code),
   updatePlace: (id, d) => impl.updatePlace(id, d),
   deletePlace: (id) => impl.deletePlace(id),
-  addPhoto: (id, blob) => impl.addPhoto(id, blob),
+  addPhoto: (id, blob, meta) => impl.addPhoto(id, blob, meta),
   deletePhoto: (id) => impl.deletePhoto(id),
   addAttendee: (pid, f, l, code) => impl.addAttendee(pid, f, l, code),
   removeAttendee: (id) => impl.removeAttendee(id),

@@ -72,6 +72,26 @@ create table if not exists public.place_comments (
 );
 create index if not exists place_comments_place_idx on public.place_comments (place_id, created_at);
 
+-- Sergi: fotoğrafı çeken kişi, sergi izni, yönetici işareti (aday / seçildi)
+alter table public.place_photos add column if not exists photographer text;
+alter table public.place_photos add column if not exists consent boolean not null default false;
+alter table public.place_photos add column if not exists exhibit text;
+do $$ begin
+  alter table public.place_photos add constraint photos_photographer_len check (char_length(photographer) between 2 and 60);
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.place_photos add constraint photos_exhibit_val check (exhibit in ('aday', 'secildi'));
+exception when duplicate_object then null; end $$;
+
+-- Gizli oylama: kim oy verdiği saklanmaz. voter_hash cihaz anahtarının AYRI bir özetidir
+-- (yer/katılım kayıtlarındaki edit_token_hash ile eşleştirilemez). Tabloya hiçbir rol doğrudan erişemez.
+create table if not exists public.photo_votes (
+  photo_id   uuid not null references public.place_photos(id) on delete cascade,
+  voter_hash text not null,
+  created_at timestamptz not null default now(),
+  primary key (photo_id, voter_hash)
+);
+
 create unique index if not exists attendees_unique_person
   on public.attendees (place_id, lower(first_name), lower(last_name));
 create index if not exists place_photos_place_idx on public.place_photos (place_id);
@@ -84,6 +104,7 @@ alter table public.places       enable row level security;
 alter table public.place_photos enable row level security;
 alter table public.attendees    enable row level security;
 alter table public.place_comments enable row level security;
+alter table public.photo_votes    enable row level security;
 
 drop policy if exists places_read on public.places;
 drop policy if exists photos_read on public.place_photos;
@@ -94,13 +115,13 @@ create policy places_read    on public.places       for select to anon, authenti
 create policy photos_read    on public.place_photos for select to anon, authenticated using (true);
 create policy attendees_read on public.attendees    for select to anon, authenticated using (true);
 
-revoke all on public.app_settings, public.places, public.place_photos, public.attendees, public.place_comments from anon, authenticated;
+revoke all on public.app_settings, public.places, public.place_photos, public.attendees, public.place_comments, public.photo_votes from anon, authenticated;
 
 -- edit_token_hash sütunu hiçbir zaman okunamaz.
 grant select (id, name, category, lat, lng, district, address, planned_date, notes,
               status, max_attendees, author_name, created_at, meet_time, meet_point, info)
   on public.places to anon, authenticated;
-grant select (id, place_id, path, created_at) on public.place_photos to anon, authenticated;
+grant select (id, place_id, path, created_at, photographer, consent, exhibit) on public.place_photos to anon, authenticated;
 grant select (id, place_id, first_name, last_name, created_at) on public.attendees to anon, authenticated;
 grant select (id, place_id, author_name, body, created_at) on public.place_comments to anon, authenticated;
 
@@ -266,8 +287,11 @@ begin
   if not found then raise exception 'YETKISIZ'; end if;
 end $$;
 
-create or replace function public.add_photo(p_token text, p_place_id uuid, p_path text, p_admin text default null)
-returns uuid language plpgsql security definer
+drop function if exists public.add_photo(text, uuid, text, text);
+create or replace function public.add_photo(
+  p_token text, p_place_id uuid, p_path text, p_admin text default null,
+  p_photographer text default null, p_consent boolean default false
+) returns uuid language plpgsql security definer
 set search_path = public, extensions
 as $$
 declare v_id uuid;
@@ -282,7 +306,8 @@ begin
   if (select count(*) from public.place_photos where place_id = p_place_id) >= 5 then
     raise exception 'FOTOGRAF_LIMITI';
   end if;
-  insert into public.place_photos (place_id, path) values (p_place_id, p_path) returning id into v_id;
+  insert into public.place_photos (place_id, path, photographer, consent)
+  values (p_place_id, p_path, nullif(btrim(p_photographer), ''), coalesce(p_consent, false)) returning id into v_id;
   return v_id;
 end $$;
 
@@ -341,6 +366,85 @@ begin
   if not found then raise exception 'YETKISIZ'; end if;
 end $$;
 
+-- ---------------------------------------------------------------- sergi oylaması
+-- Oylama varsayılan olarak KAPALI; yönetici açar/kapatır.
+create or replace function public._voting_open()
+returns boolean language sql security definer
+set search_path = public
+as $$ select coalesce((select value = 'open' from public.app_settings where key = 'voting_state'), false) $$;
+
+create or replace function public.voting_status()
+returns boolean language sql security definer
+set search_path = public
+as $$ select public._voting_open() $$;
+
+create or replace function public.set_voting(p_admin text, p_open boolean)
+returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  if not public._is_admin(p_admin) then raise exception 'YETKISIZ'; end if;
+  insert into public.app_settings (key, value) values ('voting_state', case when p_open then 'open' else 'closed' end)
+  on conflict (key) do update set value = excluded.value;
+end $$;
+
+-- Cihaz başına en fazla 10 oy; yalnızca sergi izni verilmiş fotoğraflara oy verilir.
+create or replace function public.vote_photo(p_code text, p_token text, p_photo_id uuid, p_on boolean)
+returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+declare v text;
+begin
+  perform public._check_code(p_code);
+  perform public._check_token(p_token);
+  if not public._voting_open() then raise exception 'OYLAMA_KAPALI'; end if;
+  if (select count(*) from public.photo_votes where created_at > now() - interval '1 minute') >= 300 then
+    raise exception 'COK_FAZLA_ISTEK';
+  end if;
+  v := public._hash('oy:' || p_token);
+  if p_on then
+    if not exists (select 1 from public.place_photos where id = p_photo_id and consent) then raise exception 'FOTOGRAF_YOK'; end if;
+    if (select count(*) from public.photo_votes where voter_hash = v) >= 10
+       and not exists (select 1 from public.photo_votes where photo_id = p_photo_id and voter_hash = v) then
+      raise exception 'OY_LIMITI';
+    end if;
+    insert into public.photo_votes (photo_id, voter_hash) values (p_photo_id, v) on conflict do nothing;
+  else
+    delete from public.photo_votes where photo_id = p_photo_id and voter_hash = v;
+  end if;
+end $$;
+
+-- Bu cihazın kendi oyları (başkasının oyu asla döndürülmez).
+create or replace function public.my_votes(p_token text)
+returns setof uuid language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  perform public._check_token(p_token);
+  return query select photo_id from public.photo_votes where voter_hash = public._hash('oy:' || p_token);
+end $$;
+
+-- Oy sayıları: yönetici her zaman, diğerleri yalnızca oylama kapalıyken görür.
+create or replace function public.vote_counts(p_admin text)
+returns table (photo_id uuid, votes bigint) language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  if public._is_admin(p_admin) or not public._voting_open() then
+    return query select v.photo_id, count(*) from public.photo_votes v group by v.photo_id;
+  end if;
+end $$;
+
+create or replace function public.set_photo_exhibit(p_admin text, p_photo_id uuid, p_status text)
+returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  if not public._is_admin(p_admin) then raise exception 'YETKISIZ'; end if;
+  update public.place_photos set exhibit = nullif(p_status, '') where id = p_photo_id;
+  if not found then raise exception 'FOTOGRAF_YOK'; end if;
+end $$;
+
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function
   public.code_required(), public.check_code(text), public.check_admin(text),
@@ -349,7 +453,9 @@ grant execute on function
   public.add_comment(text, text, uuid, text, text),
   public.delete_comment(text, uuid, text),
   public.delete_place(text, uuid, text),
-  public.add_photo(text, uuid, text, text),
+  public.add_photo(text, uuid, text, text, text, boolean),
+  public.voting_status(), public.set_voting(text, boolean), public.vote_photo(text, text, uuid, boolean),
+  public.my_votes(text), public.vote_counts(text), public.set_photo_exhibit(text, uuid, text),
   public.delete_photo(text, uuid, text),
   public.add_attendee(text, text, uuid, text, text),
   public.remove_attendee(text, uuid, text)
