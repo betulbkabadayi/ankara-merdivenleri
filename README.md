@@ -6,6 +6,8 @@ Statik site (GitHub Pages) + Supabase (Postgres + Storage). Giriş yok.
 ## Özellikler
 - Yer önerisi: ad, kategori (dış/iç mekan), haritada konum, önerilen çekim tarihi (zorunlu); ilçe, adres, not, kontenjan, fotoğraf (isteğe bağlı, en fazla 5)
 - Herkes herkesin eklediği yerleri harita ve takvim görünümünde görür
+- Buluşma saati/noktası ve pratik bilgiler (ücret, çalışma saati, izin…), her yerin altında yorumlar
+- Detayda **Paylaş**, **Takvime ekle** (.ics ve Google Takvim); listede "Bu hafta" grubu, aynı güne düşen yerler için "Rotayı aç"
 - **Katılacağım**: ad + soyad ile çekime katılım, katılımcı listesi, vazgeçme
 - Filtre: kategori, durum, tarih, arama, "Katıldıklarım"; CSV dışa aktarma
 - Düzenleme/silme yalnızca kaydı ekleyen cihazdan (cihaz anahtarı)
@@ -14,7 +16,7 @@ Statik site (GitHub Pages) + Supabase (Postgres + Storage). Giriş yok.
 
 ## Kurulum (Supabase)
 1. [supabase.com](https://supabase.com) üzerinde yeni bir proje oluşturun.
-2. SQL Editor'de `supabase/schema.sql` dosyasını çalıştırın (tekrar çalıştırılabilir).
+2. SQL Editor'de `supabase/schema.sql` dosyasını çalıştırın (tekrar çalıştırılabilir). Mevcut bir kurulumda saat/buluşma/pratik bilgi ve yorum özellikleri için dosyayı **yeniden çalıştırın**; çalıştırılana kadar bu alanlar gizli kalır, uygulama eskisi gibi çalışır.
 3. İsteğe bağlı davet kodu: `schema.sql` sonundaki örnek `insert` komutunu kendi kodunuzla çalıştırın.
 4. `js/config.js` içine **Project URL** ve **anon public** anahtarını yazın (Settings → API). Anon anahtarı herkese açık olacak şekilde tasarlanmıştır; yetkiyi veritabanı kuralları sağlar.
 5. Repoyu GitHub Pages ile yayınlayın (Settings → Pages → `main` / root).

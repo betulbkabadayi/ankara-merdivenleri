@@ -69,13 +69,17 @@ const remote = {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args),
     });
   },
+  ext: false, // yeni alanlar (saat, buluşma yeri, pratik bilgi, yorumlar) veritabanında var mı?
   async init() {
+    // schema.sql güncel çalıştırılmadıysa yeni özellikler gizlenir, uygulama eskisi gibi çalışır.
+    this.ext = await this.request("/rest/v1/places?select=meet_time&limit=1").then(() => true, () => false);
     try { return { codeRequired: !!(await this.rpc("code_required", {})) }; } catch { return { codeRequired: false }; }
   },
   checkCode: (code) => remote.rpc("check_code", { p_code: code }),
   checkAdmin: (code) => remote.rpc("check_admin", { p_admin: code }),
   listPlaces() {
     const sel = "id,name,category,lat,lng,district,address,planned_date,notes,status,max_attendees,author_name,created_at," +
+      (this.ext ? "meet_time,meet_point,info,place_comments(id,author_name,body,created_at)," : "") +
       "place_photos(id,path),attendees(id,first_name,last_name,created_at)";
     return this.request("/rest/v1/places?select=" + encodeURIComponent(sel) + "&order=planned_date.asc.nullslast,created_at.asc");
   },
@@ -84,18 +88,32 @@ const remote = {
       p_code: code || null, p_token: identity.token(), p_name: d.name, p_category: d.category,
       p_lat: d.lat, p_lng: d.lng, p_district: d.district || null, p_address: d.address || null,
       p_planned_date: d.planned_date, p_notes: d.notes || null, p_author: d.author,
-      p_max_attendees: d.max_attendees || null,
+      p_max_attendees: d.max_attendees || null, ...this.extArgs(d),
     });
     identity.addMine("places", id);
     return id;
+  },
+  extArgs(d) {
+    return this.ext ? { p_meet_time: d.meet_time || null, p_meet_point: d.meet_point || null, p_info: d.info || null } : {};
   },
   updatePlace(id, d) {
     return this.rpc("update_place", {
       p_token: identity.token(), p_id: id, p_name: d.name, p_category: d.category,
       p_district: d.district || null, p_address: d.address || null, p_planned_date: d.planned_date,
       p_notes: d.notes || null, p_status: d.status, p_max_attendees: d.max_attendees || null,
-      p_lat: d.lat ?? null, p_lng: d.lng ?? null, p_admin: identity.admin() || null,
+      p_lat: d.lat ?? null, p_lng: d.lng ?? null, p_admin: identity.admin() || null, ...this.extArgs(d),
     });
+  },
+  async addComment(placeId, author, body, code) {
+    const id = await this.rpc("add_comment", {
+      p_code: code || null, p_token: identity.token(), p_place_id: placeId, p_author: author, p_body: body,
+    });
+    identity.addMine("comments", id);
+    return id;
+  },
+  async deleteComment(id) {
+    await this.rpc("delete_comment", { p_token: identity.token(), p_id: id, p_admin: identity.admin() || null });
+    identity.removeMine("comments", id);
   },
   async photoPaths(filter) {
     const rows = await this.request("/rest/v1/place_photos?select=path&" + filter);
@@ -144,7 +162,8 @@ const remote = {
 
 // ======================================================= Demo (localStorage)
 const demo = {
-  db() { return LS.get("st_demo_db", { places: [], photos: [], attendees: [] }); },
+  ext: true,
+  db() { return { comments: [], ...LS.get("st_demo_db", { places: [], photos: [], attendees: [] }) }; },
   save(db) {
     try { LS.set("st_demo_db", db); } catch { throw new Error("Demo depolama dolu (fotoğraf çok büyük)."); }
   },
@@ -157,6 +176,7 @@ const demo = {
       ...p,
       place_photos: db.photos.filter((x) => x.place_id === p.id),
       attendees: db.attendees.filter((x) => x.place_id === p.id),
+      place_comments: db.comments.filter((x) => x.place_id === p.id),
     })).sort((a, b) => a.planned_date.localeCompare(b.planned_date));
   },
   async addPlace(d) {
@@ -165,6 +185,7 @@ const demo = {
       id, name: d.name.trim(), category: d.category, lat: d.lat, lng: d.lng, district: d.district || null,
       address: d.address || null, planned_date: d.planned_date, notes: d.notes || null, status: "onerildi",
       max_attendees: d.max_attendees || null, author_name: d.author.trim(), created_at: new Date().toISOString(),
+      meet_time: d.meet_time || null, meet_point: d.meet_point || null, info: d.info || null,
     });
     this.save(db); identity.addMine("places", id); return id;
   },
@@ -175,14 +196,27 @@ const demo = {
       name: d.name.trim(), category: d.category, district: d.district || null, address: d.address || null,
       planned_date: d.planned_date || null, notes: d.notes || null, status: d.status, max_attendees: d.max_attendees || null,
       lat: d.lat ?? p.lat, lng: d.lng ?? p.lng,
+      meet_time: d.meet_time || null, meet_point: d.meet_point || null, info: d.info || null,
     });
     this.save(db);
+  },
+  async addComment(placeId, author, body) {
+    const db = this.db();
+    if (!db.places.some((x) => x.id === placeId)) throw friendly("YER_YOK");
+    const id = uuid();
+    db.comments.push({ id, place_id: placeId, author_name: author.trim(), body: body.trim(), created_at: new Date().toISOString() });
+    this.save(db); identity.addMine("comments", id); return id;
+  },
+  async deleteComment(id) {
+    const db = this.db(); db.comments = db.comments.filter((x) => x.id !== id);
+    this.save(db); identity.removeMine("comments", id);
   },
   async deletePlace(id) {
     const db = this.db();
     db.places = db.places.filter((x) => x.id !== id);
     db.photos = db.photos.filter((x) => x.place_id !== id);
     db.attendees = db.attendees.filter((x) => x.place_id !== id);
+    db.comments = db.comments.filter((x) => x.place_id !== id);
     this.save(db); identity.removeMine("places", id);
   },
   async addPhoto(placeId, blob) {
@@ -214,6 +248,9 @@ const demo = {
 const impl = isDemo ? demo : remote;
 export const api = {
   init: () => impl.init(),
+  get ext() { return impl.ext; },
+  addComment: (pid, author, body, code) => impl.addComment(pid, author, body, code),
+  deleteComment: (id) => impl.deleteComment(id),
   checkCode: (c) => impl.checkCode(c),
   checkAdmin: (c) => impl.checkAdmin(c),
   listPlaces: () => impl.listPlaces(),

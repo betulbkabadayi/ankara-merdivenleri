@@ -229,3 +229,16 @@ label small, .label small { font-weight: 400; }
 @media (pointer: coarse) {
   input, select, textarea { font-size: 16px; }
 }
+
+/* Yeni özellikler: takvim/paylaş, bu hafta, rota, yorumlar */
+a.btn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; color: inherit; }
+.quick { display: flex; flex-wrap: wrap; gap: 8px; }
+.week-title { font-size: 14px; font-weight: 800; color: var(--accent-ink); margin: 14px 0 0; }
+.week-title.later { color: var(--ink-2); }
+.badge.soon { background: #fff1cc; color: var(--accent-ink); }
+.route { font-size: 12px; font-weight: 600; margin-left: 8px; }
+.comments { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.comments li { background: #f4f6f8; border-radius: 10px; padding: 8px 10px; font-size: 14px; word-break: break-word; }
+.comments .ch { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 2px; }
+.comments .ch button { margin-left: auto; border: 0; background: transparent; cursor: pointer; color: var(--bad); font-weight: 700; min-width: 32px; min-height: 28px; }
+.comment-form { display: flex; flex-direction: column; gap: 8px; }

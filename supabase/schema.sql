@@ -50,6 +50,28 @@ create table if not exists public.attendees (
 -- Mevcut kurulumlar için: tarih belirlenmemiş kayıtlara izin ver.
 alter table public.places alter column planned_date drop not null;
 
+-- Buluşma saati/yeri ve pratik bilgiler (giriş ücreti, çalışma saati, izin vb.)
+alter table public.places add column if not exists meet_time  time;
+alter table public.places add column if not exists meet_point text;
+alter table public.places add column if not exists info       text;
+do $$ begin
+  alter table public.places add constraint places_meet_point_len check (char_length(meet_point) <= 120);
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.places add constraint places_info_len check (char_length(info) <= 500);
+exception when duplicate_object then null; end $$;
+
+-- Yer yorumları
+create table if not exists public.place_comments (
+  id              uuid primary key default gen_random_uuid(),
+  place_id        uuid not null references public.places(id) on delete cascade,
+  author_name     text not null check (char_length(author_name) between 2 and 60),
+  body            text not null check (char_length(body) between 1 and 500),
+  edit_token_hash text not null,
+  created_at      timestamptz not null default now()
+);
+create index if not exists place_comments_place_idx on public.place_comments (place_id, created_at);
+
 create unique index if not exists attendees_unique_person
   on public.attendees (place_id, lower(first_name), lower(last_name));
 create index if not exists place_photos_place_idx on public.place_photos (place_id);
@@ -61,22 +83,26 @@ alter table public.app_settings enable row level security;
 alter table public.places       enable row level security;
 alter table public.place_photos enable row level security;
 alter table public.attendees    enable row level security;
+alter table public.place_comments enable row level security;
 
 drop policy if exists places_read on public.places;
 drop policy if exists photos_read on public.place_photos;
 drop policy if exists attendees_read on public.attendees;
+drop policy if exists comments_read on public.place_comments;
+create policy comments_read  on public.place_comments for select to anon, authenticated using (true);
 create policy places_read    on public.places       for select to anon, authenticated using (true);
 create policy photos_read    on public.place_photos for select to anon, authenticated using (true);
 create policy attendees_read on public.attendees    for select to anon, authenticated using (true);
 
-revoke all on public.app_settings, public.places, public.place_photos, public.attendees from anon, authenticated;
+revoke all on public.app_settings, public.places, public.place_photos, public.attendees, public.place_comments from anon, authenticated;
 
 -- edit_token_hash sütunu hiçbir zaman okunamaz.
 grant select (id, name, category, lat, lng, district, address, planned_date, notes,
-              status, max_attendees, author_name, created_at)
+              status, max_attendees, author_name, created_at, meet_time, meet_point, info)
   on public.places to anon, authenticated;
 grant select (id, place_id, path, created_at) on public.place_photos to anon, authenticated;
 grant select (id, place_id, first_name, last_name, created_at) on public.attendees to anon, authenticated;
+grant select (id, place_id, author_name, body, created_at) on public.place_comments to anon, authenticated;
 
 -- ---------------------------------------------------------------- yardımcılar
 create or replace function public._hash(p_token text)
@@ -125,11 +151,13 @@ exception when others then
 end $$;
 
 -- ---------------------------------------------------------------- yer işlemleri
+drop function if exists public.add_place(text, text, text, text, double precision, double precision, text, text, date, text, text, integer);
 create or replace function public.add_place(
   p_code text, p_token text,
   p_name text, p_category text, p_lat double precision, p_lng double precision,
   p_district text, p_address text, p_planned_date date, p_notes text,
-  p_author text, p_max_attendees integer default null
+  p_author text, p_max_attendees integer default null,
+  p_meet_time time default null, p_meet_point text default null, p_info text default null
 ) returns uuid language plpgsql security definer
 set search_path = public, extensions
 as $$
@@ -141,10 +169,12 @@ begin
     raise exception 'COK_FAZLA_ISTEK';
   end if;
   insert into public.places (name, category, lat, lng, district, address, planned_date, notes,
-                             author_name, max_attendees, edit_token_hash)
+                             author_name, max_attendees, edit_token_hash,
+                             meet_time, meet_point, info)
   values (btrim(p_name), p_category, p_lat, p_lng, nullif(btrim(p_district), ''),
           nullif(btrim(p_address), ''), p_planned_date, nullif(btrim(p_notes), ''),
-          btrim(p_author), p_max_attendees, public._hash(p_token))
+          btrim(p_author), p_max_attendees, public._hash(p_token),
+          p_meet_time, nullif(btrim(p_meet_point), ''), nullif(btrim(p_info), ''))
   returning id into v_id;
   return v_id;
 end $$;
@@ -199,6 +229,7 @@ drop function if exists public.delete_place(text, uuid);
 drop function if exists public.add_photo(text, uuid, text);
 drop function if exists public.delete_photo(text, uuid);
 drop function if exists public.remove_attendee(text, uuid);
+drop function if exists public.update_place(text, uuid, text, text, text, text, date, text, text, integer, double precision, double precision, text);
 
 create or replace function public.update_place(
   p_token text, p_id uuid,
@@ -206,13 +237,15 @@ create or replace function public.update_place(
   p_planned_date date, p_notes text, p_status text,
   p_max_attendees integer default null,
   p_lat double precision default null, p_lng double precision default null,
-  p_admin text default null
+  p_admin text default null,
+  p_meet_time time default null, p_meet_point text default null, p_info text default null
 ) returns void language plpgsql security definer
 set search_path = public, extensions
 as $$
 begin
   perform public._check_token(p_token);
   update public.places set
+    meet_time = p_meet_time, meet_point = nullif(btrim(p_meet_point), ''), info = nullif(btrim(p_info), ''),
     name = btrim(p_name), category = p_category,
     district = nullif(btrim(p_district), ''), address = nullif(btrim(p_address), ''),
     planned_date = p_planned_date, notes = nullif(btrim(p_notes), ''),
@@ -277,11 +310,44 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- fonksiyon yetkileri
+-- ---------------------------------------------------------------- yorumlar
+create or replace function public.add_comment(
+  p_code text, p_token text, p_place_id uuid, p_author text, p_body text
+) returns uuid language plpgsql security definer
+set search_path = public, extensions
+as $$
+declare v_id uuid;
+begin
+  perform public._check_code(p_code);
+  perform public._check_token(p_token);
+  if (select count(*) from public.place_comments where created_at > now() - interval '1 minute') >= 60 then
+    raise exception 'COK_FAZLA_ISTEK';
+  end if;
+  if not exists (select 1 from public.places where id = p_place_id) then raise exception 'YER_YOK'; end if;
+  insert into public.place_comments (place_id, author_name, body, edit_token_hash)
+  values (p_place_id, btrim(p_author), btrim(p_body), public._hash(p_token))
+  returning id into v_id;
+  return v_id;
+end $$;
+
+create or replace function public.delete_comment(p_token text, p_id uuid, p_admin text default null)
+returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  perform public._check_token(p_token);
+  delete from public.place_comments
+   where id = p_id and (edit_token_hash = public._hash(p_token) or public._is_admin(p_admin));
+  if not found then raise exception 'YETKISIZ'; end if;
+end $$;
+
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function
   public.code_required(), public.check_code(text), public.check_admin(text),
-  public.add_place(text, text, text, text, double precision, double precision, text, text, date, text, text, integer),
-  public.update_place(text, uuid, text, text, text, text, date, text, text, integer, double precision, double precision, text),
+  public.add_place(text, text, text, text, double precision, double precision, text, text, date, text, text, integer, time, text, text),
+  public.update_place(text, uuid, text, text, text, text, date, text, text, integer, double precision, double precision, text, time, text, text),
+  public.add_comment(text, text, uuid, text, text),
+  public.delete_comment(text, uuid, text),
   public.delete_place(text, uuid, text),
   public.add_photo(text, uuid, text, text),
   public.delete_photo(text, uuid, text),

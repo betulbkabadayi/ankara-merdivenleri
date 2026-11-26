@@ -1,4 +1,4 @@
-import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=12";
+import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=13";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -22,6 +22,56 @@ const canEdit = (p) => isAdmin() || identity.mine("places").has(p.id);
 const byDate = (a, b) => (a.planned_date || "9999").localeCompare(b.planned_date || "9999");
 const fullName = (a) => `${a.first_name} ${a.last_name}`;
 const inBounds = (lat, lng) => lat >= BOUNDS.latMin && lat <= BOUNDS.latMax && lng >= BOUNDS.lngMin && lng <= BOUNDS.lngMax;
+const hhmm = (t) => (t ? String(t).slice(0, 5) : "");
+const daysUntil = (s) => Math.round((new Date(s + "T00:00:00") - new Date(todayStr() + "T00:00:00")) / 864e5);
+const fmtStamp = (s) => new Date(s).toLocaleString("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const dirUrl = (p) => `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
+const shareUrl = (p) => location.origin + location.pathname + "#yer=" + p.id;
+const profileName = () => { const p = identity.profile(); return p.author || [p.first, p.last].filter(Boolean).join(" "); };
+
+// ---- Takvim (.ics / Google Takvim) ve paylaşma
+// Türkiye yıl boyu UTC+3 olduğundan saatli etkinlikler UTC'ye sabit farkla çevrilir.
+function eventTimes(p) {
+  const [y, m, d] = p.planned_date.split("-").map(Number);
+  if (p.meet_time) {
+    const [hh, mm] = hhmm(p.meet_time).split(":").map(Number);
+    const fmt = (ms) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+    const start = Date.UTC(y, m - 1, d, hh - 3, mm);
+    return { allDay: false, start: fmt(start), end: fmt(start + 2 * 3600e3) };
+  }
+  return { allDay: true, start: p.planned_date.replace(/-/g, ""), end: new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10).replace(/-/g, "") };
+}
+function eventInfo(p) {
+  const loc = [p.name, p.address, p.district].filter(Boolean).join(", ");
+  const details = [p.meet_point && "Buluşma: " + p.meet_point, p.info, p.notes, "Yol tarifi: " + dirUrl(p), "Detay: " + shareUrl(p)].filter(Boolean).join("\n");
+  return { title: "Merdiven çekimi: " + p.name, loc, details };
+}
+function googleCalUrl(p) {
+  const t = eventTimes(p), e = eventInfo(p);
+  return "https://calendar.google.com/calendar/render?action=TEMPLATE&text=" + encodeURIComponent(e.title) +
+    `&dates=${t.start}/${t.end}&details=` + encodeURIComponent(e.details) + "&location=" + encodeURIComponent(e.loc);
+}
+function downloadIcs(p) {
+  const t = eventTimes(p), e = eventInfo(p);
+  const x = (s) => String(s).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const when = t.allDay ? [`DTSTART;VALUE=DATE:${t.start}`, `DTEND;VALUE=DATE:${t.end}`] : [`DTSTART:${t.start}`, `DTEND:${t.end}`];
+  const ics = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Ankara Merdivenleri//TR", "CALSCALE:GREGORIAN", "BEGIN:VEVENT",
+    `UID:${p.id}@ankara-merdivenleri`, `DTSTAMP:${stamp}`, ...when, `SUMMARY:${x(e.title)}`, `LOCATION:${x(e.loc)}`,
+    `GEO:${p.lat};${p.lng}`, `DESCRIPTION:${x(e.details)}`, "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([ics], { type: "text/calendar;charset=utf-8" }));
+  a.download = "ankara-merdivenleri.ics"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+async function sharePlace(p) {
+  const url = shareUrl(p);
+  const text = `${p.name} · ${fmtShort(p.planned_date)}${p.meet_time ? " " + hhmm(p.meet_time) : ""}`;
+  if (navigator.share) {
+    try { await navigator.share({ title: p.name, text, url }); return; } catch (e) { if (e.name === "AbortError") return; }
+  }
+  try { await navigator.clipboard.writeText(text + "\n" + url); toast("Bağlantı kopyalandı"); }
+  catch { toast("Bağlantı kopyalanamadı: " + url, true); }
+}
 
 let toastTimer;
 function toast(msg, isError = false) {
@@ -109,9 +159,13 @@ function cardHtml(p) {
   const mine = identity.mine("places").has(p.id);
   const n = p.attendees.length;
   const cap = p.max_attendees ? `${n}/${p.max_attendees}` : String(n);
+  const dd = p.planned_date && p.status === "onerildi" ? daysUntil(p.planned_date) : -1;
+  const soon = dd >= 0 && dd <= 7 ? (dd === 0 ? "Bugün" : dd === 1 ? "Yarın" : `${dd} gün sonra`) : "";
   return `<button class="card ${p.category === "ic_mekan" ? "ic" : ""} ${p.status === "iptal" ? "iptal" : ""}" data-id="${esc(p.id)}">
     <div class="t">${esc(p.name)}</div>
     <div class="m">
+      ${soon ? `<span class="badge soon">${esc(soon)}</span>` : ""}
+      ${p.meet_time ? `<span>🕙 ${esc(hhmm(p.meet_time))}</span>` : ""}
       <span>${esc(CAT[p.category])}${p.district ? " · " + esc(p.district) : ""}</span>
       <span>👥 ${esc(cap)} katılımcı</span>
       <span>${esc(p.author_name)}</span>
@@ -131,12 +185,20 @@ function renderList(list) {
   const upcoming = list.filter((p) => p.planned_date && p.planned_date >= today).sort(byDate);
   const undated = list.filter((p) => !p.planned_date);
   const past = list.filter((p) => p.planned_date && p.planned_date < today).sort((a, b) => byDate(b, a));
-  const group = (items, cls) => {
+  // Aynı güne 2+ yer varsa Google Maps'te çok duraklı rota bağlantısı (saate göre sıralı)
+  const routeLink = (ps) => {
+    const stops = ps.filter((p) => p.status !== "iptal").sort((a, b) => hhmm(a.meet_time || "99:99").localeCompare(hhmm(b.meet_time || "99:99")));
+    if (stops.length < 2 || stops.length > 9) return "";
+    return ` <a class="route" href="https://www.google.com/maps/dir/${stops.map((p) => p.lat + "," + p.lng).join("/")}" target="_blank" rel="noopener">Rotayı aç</a>`;
+  };
+  const group = (items, cls, route = false) => {
     const by = new Map();
     for (const p of items) { if (!by.has(p.planned_date)) by.set(p.planned_date, []); by.get(p.planned_date).push(p); }
-    return [...by].map(([d, ps]) => `<h3 class="group-title ${cls}">${esc(fmtDate(d))}</h3>${ps.map(cardHtml).join("")}`).join("");
+    return [...by].map(([d, ps]) => `<h3 class="group-title ${cls}">${esc(fmtDate(d))}${route ? routeLink(ps) : ""}</h3>${ps.map(cardHtml).join("")}`).join("");
   };
-  box.innerHTML = group(upcoming, "") +
+  const thisWeek = upcoming.filter((p) => daysUntil(p.planned_date) <= 6), later = upcoming.filter((p) => daysUntil(p.planned_date) > 6);
+  box.innerHTML = (thisWeek.length ? `<h3 class="week-title">Bu hafta</h3>` + group(thisWeek, "", true) : "") +
+    (thisWeek.length && later.length ? `<h3 class="week-title later">Daha sonra</h3>` : "") + group(later, "", true) +
     (undated.length ? `<h3 class="group-title">Tarihi belirlenmemiş</h3>${undated.map(cardHtml).join("")}` : "") +
     (past.length ? `<h3 class="group-title past">— Geçmiş —</h3>` + group(past, "past") : "");
 }
@@ -213,6 +275,7 @@ function openPlaceForm(place = null) {
   $("#place-title").textContent = place ? "Yeri Düzenle" : "Yer Ekle";
   $("#place-submit").textContent = place ? "Güncelle" : "Kaydet";
   $("#loc-block").hidden = false;
+  $$(".ext-only", f).forEach((el) => (el.hidden = !api.ext));
   $("#photo-wrap").hidden = !!place; $("#photo-previews").hidden = !!place;
   $("#status-wrap").hidden = !place;
   f.author.closest("label").hidden = !!place;
@@ -221,6 +284,7 @@ function openPlaceForm(place = null) {
     f.name.value = place.name; f.category.value = place.category; f.planned_date.value = place.planned_date || "";
     f.district.value = place.district || ""; f.address.value = place.address || ""; f.notes.value = place.notes || "";
     f.max_attendees.value = place.max_attendees || ""; f.status.value = place.status;
+    f.meet_time.value = hhmm(place.meet_time); f.meet_point.value = place.meet_point || ""; f.info.value = place.info || "";
   } else {
     const p = identity.profile();
     f.author.value = p.author || [p.first, p.last].filter(Boolean).join(" ");
@@ -242,6 +306,7 @@ function placeFormData(f) {
     district: f.district.value.trim(), address: f.address.value.trim(), notes: f.notes.value.trim(),
     author: f.author.value.trim(), status: f.status.value || "onerildi", max_attendees: max ? parseInt(max, 10) : null,
     lat: pick?.lat, lng: pick?.lng,
+    meet_time: f.meet_time.value || null, meet_point: f.meet_point.value.trim(), info: f.info.value.trim(),
   };
 }
 
@@ -312,7 +377,19 @@ function renderDetail(id) {
   }).join("");
   const people = p.attendees.map((a) =>
     `<li class="${myAtt.has(a.id) ? "me" : ""}">${esc(fullName(a))}${(myAtt.has(a.id) || isAdmin()) ? `<button type="button" data-act="leave" data-id="${esc(a.id)}" title="Katılımdan vazgeç" aria-label="Katılımdan vazgeç">×</button>` : ""}</li>`).join("");
-  const dir = `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
+  const dir = dirUrl(p);
+  const meet = [hhmm(p.meet_time), p.meet_point].filter(Boolean).join(" · ");
+  const draft = { body: $("#comment-body")?.value || "", name: $("#comment-name")?.value };
+  const myCom = identity.mine("comments");
+  const comments = (p.place_comments || []).slice().sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const commentsHtml = !api.ext ? "" : `
+      <div class="section-title">Yorumlar (${comments.length})</div>
+      ${comments.length ? `<ul class="comments">${comments.map((c) => `<li><div class="ch"><b>${esc(c.author_name)}</b> <span class="muted">${esc(fmtStamp(c.created_at))}</span>${(isAdmin() || myCom.has(c.id)) ? `<button type="button" data-act="del-comment" data-id="${esc(c.id)}" aria-label="Yorumu sil">×</button>` : ""}</div><div>${esc(c.body).replace(/\n/g, "<br>")}</div></li>`).join("")}</ul>` : `<p class="muted">Henüz yorum yok.</p>`}
+      <div class="comment-form">
+        <input id="comment-name" maxlength="60" placeholder="Adınız" aria-label="Adınız" value="${esc(draft.name ?? profileName())}">
+        <textarea id="comment-body" rows="2" maxlength="500" placeholder="Yorum yaz…" aria-label="Yorum">${esc(draft.body)}</textarea>
+        <button type="button" class="btn ghost" data-act="add-comment">Yorum gönder</button>
+      </div>`;
   box.innerHTML = `
     <header class="dlg-head"><h2>${esc(p.name)}</h2><button type="button" class="x" data-close aria-label="Kapat">×</button></header>
     <div class="dlg-body">
@@ -322,14 +399,22 @@ function renderDetail(id) {
         <dt>Kategori</dt><dd>${esc(CAT[p.category])}</dd>
         <dt>Çekim tarihi</dt><dd>${esc(fmtDate(p.planned_date))}</dd>
         ${p.district ? `<dt>İlçe</dt><dd>${esc(p.district)}</dd>` : ""}
+        ${meet ? `<dt>Buluşma</dt><dd>${esc(meet)}</dd>` : ""}
         ${p.address ? `<dt>Adres / tarif</dt><dd>${esc(p.address)}</dd>` : ""}
+        ${p.info ? `<dt>Pratik bilgi</dt><dd>${esc(p.info).replace(/\n/g, "<br>")}</dd>` : ""}
         ${p.notes ? `<dt>Not</dt><dd>${esc(p.notes).replace(/\n/g, "<br>")}</dd>` : ""}
         <dt>Ekleyen</dt><dd>${esc(p.author_name)}</dd>
         <dt>Konum</dt><dd><a href="${esc(dir)}" target="_blank" rel="noopener">Yol tarifi al</a> · ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</dd>
       </dl>
+      <div class="quick">
+        <button type="button" class="btn ghost" data-act="share">Paylaş</button>
+        ${p.planned_date ? `<button type="button" class="btn ghost" data-act="ics">Takvime ekle</button>
+        <a class="btn ghost" href="${esc(googleCalUrl(p))}" target="_blank" rel="noopener">Google Takvim</a>` : ""}
+      </div>
       <div class="section-title">Katılacaklar (${n}${p.max_attendees ? "/" + p.max_attendees : ""})</div>
       ${n ? `<ul class="people">${people}</ul>` : `<p class="muted">Henüz kimse katılmadı.</p>`}
       ${mineP && p.place_photos.length < MAX_PHOTOS ? `<label>Fotoğraf ekle <small class="muted">(en fazla ${MAX_PHOTOS})</small><input type="file" accept="image/*" multiple data-act="add-photos"></label>` : ""}
+      ${commentsHtml}
       ${mineP ? "" : `<p class="muted"><small>Düzenleme ve silme yalnızca kaydı ekleyen cihazdan veya yönetici modundan yapılabilir.</small></p>`}
       <p id="detail-error" class="form-error" role="alert" hidden></p>
     </div>
@@ -354,6 +439,26 @@ async function onDetailClick(e) {
   const place = state.places.find((p) => p.id === id);
   try {
     if (act === "join") openRsvp(place);
+    else if (act === "share") sharePlace(place);
+    else if (act === "ics") downloadIcs(place);
+    else if (act === "add-comment") {
+      const body = $("#comment-body").value.trim(), name = $("#comment-name").value.trim();
+      if (!body) return showError(err, "Yorum yazın.");
+      if (name.length < 2) return showError(err, "Adınızı yazın.");
+      el.disabled = true;
+      try {
+        const code = await ensureCode();
+        if (code === null) return;
+        try { await api.addComment(id, name, body, code); }
+        catch (x) { if (/Davet kodu/.test(x.message)) identity.setCode(""); throw x; }
+        identity.setProfile({ ...identity.profile(), author: name });
+        $("#comment-body").value = "";
+        toast("Yorum eklendi"); await reload();
+      } finally { el.disabled = false; }
+    }
+    else if (act === "del-comment") armed(el, "Sil?", async () => {
+      try { await api.deleteComment(el.dataset.id); await reload(); } catch (x) { showError($("#detail-error"), x.message); }
+    });
     else if (act === "edit") { $("#dlg-detail").close(); openPlaceForm(place); }
     else if (act === "del-place") armed(el, "Emin misiniz? Tekrar dokunun", async () => {
       try { await api.deletePlace(id); $("#dlg-detail").close(); toast("Yer silindi"); await reload(); } catch (x) { showError($("#detail-error"), x.message); }
@@ -432,10 +537,10 @@ async function submitAdmin(e) {
 // ------------------------------------------------------------------ CSV
 function exportCsv() {
   const safe = (v) => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
-  const head = ["Tarih", "Yer", "Kategori", "İlçe", "Durum", "Ekleyen", "Katılımcı sayısı", "Katılımcılar", "Enlem", "Boylam", "Yol tarifi"];
+  const head = ["Tarih", "Saat", "Yer", "Kategori", "İlçe", "Durum", "Ekleyen", "Katılımcı sayısı", "Katılımcılar", "Enlem", "Boylam", "Yol tarifi"];
   const rows = filtered().sort(byDate).map((p) => [
-    p.planned_date || "", p.name, CAT[p.category], p.district, STATUS[p.status], p.author_name, p.attendees.length,
-    p.attendees.map(fullName).join("; "), p.lat, p.lng, `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`,
+    p.planned_date || "", hhmm(p.meet_time), p.name, CAT[p.category], p.district, STATUS[p.status], p.author_name, p.attendees.length,
+    p.attendees.map(fullName).join("; "), p.lat, p.lng, dirUrl(p),
   ]);
   const csv = "﻿" + [head, ...rows].map((r) => r.map(safe).join(";")).join("\r\n");
   const a = document.createElement("a");
@@ -530,7 +635,7 @@ function bind() {
 
   // Otomatik yenileme: form pencereleri (yazarken) ve seçili fotoğraf varken durur; sayfa görünürken 10 sn'de bir.
   // Detay penceresi açıkken de yenilenir; böylece yeni katılımcılar anında görünür.
-  const busy = () => $$("dialog[open]").some((d) => d.id !== "dlg-detail") || !!$("#detail input[type=file]")?.files?.length;
+  const busy = () => $$("dialog[open]").some((d) => d.id !== "dlg-detail") || !!$("#detail input[type=file]")?.files?.length || !!$("#comment-body")?.value;
   const refresh = () => { if (!document.hidden && !busy()) reload(false, true); };
   document.addEventListener("visibilitychange", refresh);
   window.addEventListener("focus", refresh);
