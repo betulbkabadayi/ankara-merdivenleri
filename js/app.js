@@ -330,6 +330,7 @@ function renderDetail(id) {
       <div class="section-title">Katılacaklar (${n}${p.max_attendees ? "/" + p.max_attendees : ""})</div>
       ${n ? `<ul class="people">${people}</ul>` : `<p class="muted">Henüz kimse katılmadı.</p>`}
       ${mineP && p.place_photos.length < MAX_PHOTOS ? `<label>Fotoğraf ekle <small class="muted">(en fazla ${MAX_PHOTOS})</small><input type="file" accept="image/*" multiple data-act="add-photos"></label>` : ""}
+      ${mineP ? "" : `<p class="muted"><small>Düzenleme ve silme yalnızca kaydı ekleyen cihazdan veya yönetici modundan yapılabilir.</small></p>`}
       <p id="detail-error" class="form-error" role="alert" hidden></p>
     </div>
     <footer class="dlg-foot">
