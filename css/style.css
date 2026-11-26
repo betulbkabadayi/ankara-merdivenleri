@@ -311,3 +311,13 @@ label.check.consent input { flex: none; margin-top: 2px; }
   #btn-csv { grid-column: 5; grid-row: 1; }
   #btn-json { grid-column: 6; grid-row: 1; }
 }
+
+/* Saat/tarih kutuları: mobil tarayıcıların kendi iç genişliği forma taşmasın */
+input[type=time], input[type=date] {
+  -webkit-appearance: none; appearance: none;
+  display: block; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box;
+  line-height: normal; text-align: left;
+}
+input[type=time]::-webkit-date-and-time-value, input[type=date]::-webkit-date-and-time-value { text-align: left; min-width: 0; }
+input[type=time]::-webkit-datetime-edit, input[type=date]::-webkit-datetime-edit { padding: 0; min-width: 0; }
+.row > label, .row > div { min-width: 0; }
