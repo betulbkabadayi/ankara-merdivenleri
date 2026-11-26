@@ -83,6 +83,11 @@ do $$ begin
   alter table public.place_photos add constraint photos_exhibit_val check (exhibit in ('aday', 'secildi'));
 exception when duplicate_object then null; end $$;
 
+-- Uygulamaya yalnızca sergide yer almak isteyenler katıldığı için ayrı izin kutusu yok:
+-- tüm fotoğraflar izinli sayılır (consent sütunu geriye dönük uyumluluk için duruyor).
+update public.place_photos set consent = true where not consent;
+alter table public.place_photos alter column consent set default true;
+
 -- Gizli oylama: kim oy verdiği saklanmaz. voter_hash cihaz anahtarının AYRI bir özetidir
 -- (yer/katılım kayıtlarındaki edit_token_hash ile eşleştirilemez). Tabloya hiçbir rol doğrudan erişemez.
 create table if not exists public.photo_votes (
@@ -307,7 +312,7 @@ begin
     raise exception 'FOTOGRAF_LIMITI';
   end if;
   insert into public.place_photos (place_id, path, photographer, consent)
-  values (p_place_id, p_path, nullif(btrim(p_photographer), ''), coalesce(p_consent, false)) returning id into v_id;
+  values (p_place_id, p_path, nullif(btrim(p_photographer), ''), true) returning id into v_id;
   return v_id;
 end $$;
 
@@ -388,7 +393,29 @@ begin
   on conflict (key) do update set value = excluded.value;
 end $$;
 
--- Cihaz başına en fazla 10 oy; yalnızca sergi izni verilmiş fotoğraflara oy verilir.
+-- Cihaz başına oy hakkı (varsayılan 10, yönetici değiştirir).
+create or replace function public._vote_limit()
+returns integer language sql security definer
+set search_path = public
+as $$ select coalesce((select value::integer from public.app_settings where key = 'vote_limit'), 10) $$;
+
+create or replace function public.voting_info()
+returns json language sql security definer
+set search_path = public
+as $$ select json_build_object('open', public._voting_open(), 'limit', public._vote_limit()) $$;
+
+create or replace function public.set_vote_limit(p_admin text, p_limit integer)
+returns void language plpgsql security definer
+set search_path = public, extensions
+as $$
+begin
+  if not public._is_admin(p_admin) then raise exception 'YETKISIZ'; end if;
+  if p_limit is null or p_limit < 1 or p_limit > 100 then raise exception 'GECERSIZ_DEGER'; end if;
+  insert into public.app_settings (key, value) values ('vote_limit', p_limit::text)
+  on conflict (key) do update set value = excluded.value;
+end $$;
+
+-- Kişi kendi eklediği yerin fotoğraflarına oy veremez.
 create or replace function public.vote_photo(p_code text, p_token text, p_photo_id uuid, p_on boolean)
 returns void language plpgsql security definer
 set search_path = public, extensions
@@ -403,8 +430,13 @@ begin
   end if;
   v := public._hash('oy:' || p_token);
   if p_on then
-    if not exists (select 1 from public.place_photos where id = p_photo_id and consent) then raise exception 'FOTOGRAF_YOK'; end if;
-    if (select count(*) from public.photo_votes where voter_hash = v) >= 10
+    if not exists (select 1 from public.place_photos where id = p_photo_id) then raise exception 'FOTOGRAF_YOK'; end if;
+    -- Karşılaştırma anlıktır; oy ile kişi arasında hiçbir bağlantı saklanmaz.
+    if exists (select 1 from public.place_photos ph join public.places pl on pl.id = ph.place_id
+               where ph.id = p_photo_id and pl.edit_token_hash = public._hash(p_token)) then
+      raise exception 'KENDI_FOTOGRAF';
+    end if;
+    if (select count(*) from public.photo_votes where voter_hash = v) >= public._vote_limit()
        and not exists (select 1 from public.photo_votes where photo_id = p_photo_id and voter_hash = v) then
       raise exception 'OY_LIMITI';
     end if;
@@ -454,7 +486,7 @@ grant execute on function
   public.delete_comment(text, uuid, text),
   public.delete_place(text, uuid, text),
   public.add_photo(text, uuid, text, text, text, boolean),
-  public.voting_status(), public.set_voting(text, boolean), public.vote_photo(text, text, uuid, boolean),
+  public.voting_status(), public.voting_info(), public.set_voting(text, boolean), public.set_vote_limit(text, integer), public.vote_photo(text, text, uuid, boolean),
   public.my_votes(text), public.vote_counts(text), public.set_photo_exhibit(text, uuid, text),
   public.delete_photo(text, uuid, text),
   public.add_attendee(text, text, uuid, text, text),

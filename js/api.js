@@ -41,7 +41,9 @@ const ERRORS = {
   FOTOGRAF_LIMITI: "Bir yere en fazla 5 fotoğraf eklenebilir.",
   YER_YOK: "Bu yer artık yok.",
   OYLAMA_KAPALI: "Oylama şu an kapalı.",
-  OY_LIMITI: "En fazla 10 fotoğrafa oy verebilirsiniz. Önce bir oyunuzu geri alın.",
+  OY_LIMITI: "Oy hakkınızı doldurdunuz. Yeni oy için önce bir oyunuzu geri alın.",
+  KENDI_FOTOGRAF: "Kendi eklediğiniz yerin fotoğraflarına oy veremezsiniz.",
+  GECERSIZ_DEGER: "Geçersiz değer.",
   FOTOGRAF_YOK: "Bu fotoğraf artık yok ya da sergi izni verilmemiş.",
 };
 function friendly(msg) {
@@ -147,11 +149,12 @@ const remote = {
     });
     await this.rpc("add_photo", {
       p_token: identity.token(), p_place_id: placeId, p_path: path, p_admin: identity.admin() || null,
-      ...(this.ext2 ? { p_photographer: meta.photographer || null, p_consent: !!meta.consent } : {}),
+      ...(this.ext2 ? { p_photographer: meta.photographer || null, p_consent: true } : {}),
     });
   },
   // ---- Sergi oylaması (gizli oy: sunucu oy verenin kimliğini saklamaz)
-  votingOpen: () => remote.rpc("voting_status", {}).then((v) => !!v, () => false),
+  votingInfo: () => remote.rpc("voting_info", {}).then((v) => ({ open: !!v?.open, limit: v?.limit || 10 }), () => ({ open: false, limit: 10 })),
+  setVoteLimit: (n) => remote.rpc("set_vote_limit", { p_admin: identity.admin() || null, p_limit: n }),
   myVotes: () => remote.rpc("my_votes", { p_token: identity.token() }).catch(() => []),
   async voteCounts() {
     const rows = await this.rpc("vote_counts", { p_admin: identity.admin() || null }).catch(() => []);
@@ -248,7 +251,8 @@ const demo = {
     this.save(db);
   },
   // Demo: tek kullanıcı; oylama her zaman açık, sonuçlar yalnızca oylama kapalıyken görünürdü (demoda gizli).
-  async votingOpen() { return true; },
+  async votingInfo() { return { open: true, limit: 10 }; },
+  async setVoteLimit() {},
   async myVotes() { return this.db().votes; },
   async voteCounts() { return {}; },
   async vote(photoId, on) {
@@ -283,7 +287,8 @@ export const api = {
   init: () => impl.init(),
   get ext() { return impl.ext; },
   get ext2() { return impl.ext2; },
-  votingOpen: () => impl.votingOpen(),
+  votingInfo: () => impl.votingInfo(),
+  setVoteLimit: (n) => impl.setVoteLimit(n),
   myVotes: () => impl.myVotes(),
   voteCounts: () => impl.voteCounts(),
   vote: (id, on, code) => impl.vote(id, on, code),

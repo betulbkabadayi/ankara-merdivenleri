@@ -1,4 +1,4 @@
-import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=15";
+import { api, identity, isDemo, resizeImage, searchAddress } from "./api.js?v=16";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -296,8 +296,7 @@ function openPlaceForm(place = null) {
   $("#place-submit").textContent = place ? "Güncelle" : "Kaydet";
   $("#loc-block").hidden = false;
   $$(".ext-only", f).forEach((el) => (el.hidden = !api.ext));
-  $("#photo-wrap").hidden = !!place; $("#photo-previews").hidden = !!place; $("#photo-meta").hidden = !!place || !api.ext2;
-  $("#status-wrap").hidden = !place;
+  $("#photo-wrap").hidden = !!place; $("#photo-previews").hidden = !!place;  $("#status-wrap").hidden = !place;
   f.author.closest("label").hidden = !!place;
   $("#addr-results").hidden = true;
   if (place) {
@@ -374,7 +373,7 @@ async function submitPlace(e) {
     for (let i = 0; i < pendingFiles.length; i++) {
       btn.textContent = `Fotoğraf ${i + 1}/${pendingFiles.length}…`;
       try {
-        await api.addPhoto(id, await resizeImage(pendingFiles[i]), { photographer: f.photographer.value.trim() || d.author, consent: f.consent.checked });
+        await api.addPhoto(id, await resizeImage(pendingFiles[i]), { photographer: d.author });
       } catch (err) { failed++; console.warn(err); }
     }
     $("#dlg-place").close();
@@ -408,7 +407,7 @@ function renderDetail(id) {
     `<li class="${myAtt.has(a.id) ? "me" : ""}">${esc(fullName(a))}${(myAtt.has(a.id) || isAdmin()) ? `<button type="button" data-act="leave" data-id="${esc(a.id)}" title="Katılımdan vazgeç" aria-label="Katılımdan vazgeç">×</button>` : ""}</li>`).join("");
   const dir = dirUrl(p);
   const meet = [hhmm(p.meet_time), p.meet_point].filter(Boolean).join(" · ");
-  const draft = { body: $("#comment-body")?.value || "", name: $("#comment-name")?.value, by: $("#photo-by")?.value, consent: !!$("#photo-consent")?.checked };
+  const draft = { body: $("#comment-body")?.value || "", name: $("#comment-name")?.value };
   const myCom = identity.mine("comments");
   const comments = (p.place_comments || []).slice().sort((a, b) => a.created_at.localeCompare(b.created_at));
   const commentsHtml = !api.ext ? "" : `
@@ -442,9 +441,7 @@ function renderDetail(id) {
       </div>
       <div class="section-title">Katılacaklar (${n}${p.max_attendees ? "/" + p.max_attendees : ""})</div>
       ${n ? `<ul class="people">${people}</ul>` : `<p class="muted">Henüz kimse katılmadı.</p>`}
-      ${mineP && p.place_photos.length < MAX_PHOTOS ? `${api.ext2 ? `<label>Fotoğrafı çeken <input id="photo-by" maxlength="60" placeholder="Ad Soyad" value="${esc(draft.by ?? profileName())}"></label>
-        <label class="check consent"><input id="photo-consent" type="checkbox" ${draft.consent ? "checked" : ""}> Sergide ve sergi oylamasında gösterilmesine izin veriyorum</label>` : ""}
-        <label>Fotoğraf ekle <small class="muted">(en fazla ${MAX_PHOTOS})</small><input type="file" accept="image/*" multiple data-act="add-photos"></label>` : ""}
+      ${mineP && p.place_photos.length < MAX_PHOTOS ? `<label>Fotoğraf ekle <small class="muted">(en fazla ${MAX_PHOTOS})</small><input type="file" accept="image/*" multiple data-act="add-photos"></label>` : ""}
       ${commentsHtml}
       ${mineP ? "" : `<p class="muted"><small>Düzenleme ve silme yalnızca kaydı ekleyen cihazdan veya yönetici modundan yapılabilir.</small></p>`}
       <p id="detail-error" class="form-error" role="alert" hidden></p>
@@ -512,7 +509,7 @@ async function onDetailChange(e) {
   if (e.target.dataset.act !== "add-photos") return;
   const id = state.detailId, p = state.places.find((x) => x.id === id);
   const files = [...e.target.files].slice(0, MAX_PHOTOS - p.place_photos.length);
-  const meta = { photographer: $("#photo-by")?.value.trim() || profileName(), consent: !!$("#photo-consent")?.checked };
+  const meta = { photographer: profileName() }; // fotoğraf, yükleyenin adıyla kaydedilir
   let failed = 0;
   for (const f of files) { try { await api.addPhoto(id, await resizeImage(f), meta); } catch (x) { failed++; showError($("#detail-error"), x.message); } }
   await reload();
@@ -582,7 +579,7 @@ const bulkStatus = (status) => bulkRun((p) => api.updatePlace(p.id, {
 
 function updateAdminUi() {
   if (!isAdmin()) { state.bulk = false; state.sel.clear(); }
-  updateBulkUi();
+  updateBulkUi(); updateExpoUi();
   $("#admin-banner").hidden = !isAdmin();
   $("#btn-admin").textContent = isAdmin() ? "Yönetici modundan çık" : "Yönetici girişi";
 }
@@ -603,12 +600,17 @@ async function submitAdmin(e) {
 // ------------------------------------------------------------------ CSV
 // ------------------------------------------------------------------ sergi seçkisi + gizli oylama
 // Oy veren kimse saklanmaz. Oy sayılarını yönetici her zaman, diğerleri yalnızca oylama kapalıyken görür.
-const EXPO_MAX_VOTES = 10;
-const expo = { filter: "all", open: false, mine: new Set(), counts: {} };
-// Oylama sürerken fotoğrafı çeken kişinin adı gizlenir (yönetici hariç); oylama kapanınca görünür.
+const expo = { filter: "all", open: false, limit: 10, mine: new Set(), counts: {} };
+// Oylama sürerken fotoğrafı çeken kişinin adı ve tahmin ettirebilecek yer bilgisi gizlenir (yönetici hariç).
 const hideNames = () => expo.open && !isAdmin();
-
-const expoPhotos = () => state.places.flatMap((p) => p.place_photos.filter((ph) => ph.consent).map((ph) => ({ ...ph, place: p })));
+// Sergi butonu: yönetici her zaman görür; diğerleri yalnızca oylama açıkken.
+const updateExpoUi = () => { $("#btn-expo").hidden = !(api.ext2 && (isAdmin() || expo.open)); };
+// Kendi eklediği yerin fotoğrafları oylamada kişiye gösterilmez (yönetici hariç).
+const expoPhotos = () => {
+  const mine = identity.mine("places");
+  return state.places.filter((p) => isAdmin() || !mine.has(p.id)).flatMap((p) => p.place_photos.map((ph) => ({ ...ph, place: p })));
+};
+const seedOf = (s) => { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; };
 
 async function openExpo() {
   if (!api.ext2) return toast("Sergi özellikleri henüz etkin değil (schema.sql güncellenmeli).", true);
@@ -618,8 +620,9 @@ async function openExpo() {
 }
 async function refreshExpo() {
   await reload(false, true);
-  const [open, mine, counts] = await Promise.all([api.votingOpen(), api.myVotes(), api.voteCounts()]);
-  expo.open = open; expo.mine = new Set(mine); expo.counts = counts;
+  const [info, mine, counts] = await Promise.all([api.votingInfo(), api.myVotes(), api.voteCounts()]);
+  expo.open = info.open; expo.limit = info.limit; expo.mine = new Set(mine); expo.counts = counts;
+  updateExpoUi();
   renderExpo();
 }
 function renderExpo() {
@@ -627,18 +630,20 @@ function renderExpo() {
   const votes = (x) => expo.counts[x.id] || 0;
   const F = expo.filter;
   const list = expoPhotos().filter((x) => F === "all" ? true : F === "aday" ? x.exhibit === "aday" : F === "secildi" ? x.exhibit === "secildi" : expo.mine.has(x.id));
-  if (showCounts) list.sort((a, b) => votes(b) - votes(a));
-  const left = EXPO_MAX_VOTES - expo.mine.size;
+  // Oylama sürerken sıra cihaza özgü rastgele (ilk/son sıra avantajını ve yer/kişi gruplamasını önler)
+  if (hideNames()) list.sort((a, b) => seedOf(identity.token() + a.id) - seedOf(identity.token() + b.id));
+  else if (showCounts) list.sort((a, b) => votes(b) - votes(a));
+  const left = expo.limit - expo.mine.size;
   const chip = (k, label) => `<button type="button" class="chip ${F === k ? "active" : ""}" data-f="${k}">${label}</button>`;
   const card = (x) => {
-    const url = api.photoUrl(x.path), img = `<img src="${esc(url)}" alt="${esc(x.place.name)}" loading="lazy">`;
+    const url = api.photoUrl(x.path), img = `<img src="${esc(url)}" alt="${hideNames() ? "Sergi fotoğrafı" : esc(x.place.name)}" loading="lazy">`;
     const voted = expo.mine.has(x.id);
     return `<div class="ph ${esc(x.exhibit || "")}">
       ${isDemo ? img : `<a href="${esc(url)}" target="_blank" rel="noopener">${img}</a>`}
-      <div class="cap">${hideNames() ? "" : `<b>${esc(x.photographer || "Çeken belirtilmemiş")}</b>`}
+      ${hideNames() ? "" : `<div class="cap"><b>${esc(x.photographer || "Çeken belirtilmemiş")}</b>
         <span class="muted">${esc(x.place.name)}${x.place.district ? " · " + esc(x.place.district) : ""}</span>
         ${x.exhibit === "secildi" ? `<span class="badge cekildi">Sergide</span>` : (x.exhibit === "aday" && isAdmin() ? `<span class="badge mine">Aday</span>` : "")}
-      </div>
+      </div>`}
       <div class="acts">
         ${expo.open ? `<button type="button" class="btn ghost ${voted ? "on" : ""}" data-act="vote" data-id="${esc(x.id)}">${voted ? "♥ Oyumu geri al" : "♡ Oy ver"}</button>` : ""}
         ${isAdmin() ? ["aday", "secildi"].map((v) => `<button type="button" class="btn ghost flag ${x.exhibit === v ? "on" : ""}" data-act="flag" data-id="${esc(x.id)}" data-v="${v}">${v === "aday" ? "Aday" : "Seçildi"}</button>`).join("") : ""}
@@ -650,14 +655,16 @@ function renderExpo() {
     <div class="dlg-body">
       <div class="expo-bar">
         <div class="grow">${expo.open
-          ? `<b>Oylama açık</b> · kalan oy: ${left}/${EXPO_MAX_VOTES}<br><span class="muted">Oyunuz gizlidir; kimin oy verdiği kaydedilmez.</span>`
+          ? `<b>Oylama açık</b> · kalan oy: ${left}/${expo.limit}<br><span class="muted">Beğendiğiniz fotoğraflara oy verin; hepsine oy vermeniz gerekmez. Oyunuz gizlidir, kimin oy verdiği kaydedilmez.</span>`
           : `<b>Oylama kapalı</b><br><span class="muted">Sonuçlar aşağıda görünür.</span>`}</div>
-        ${isAdmin() ? `<button type="button" class="btn ghost" data-act="toggle-voting">${expo.open ? "Oylamayı kapat" : "Oylamayı aç"}</button>
+        ${isAdmin() ? `<label class="limit">Oy hakkı <input id="expo-limit" type="number" min="1" max="100" value="${expo.limit}"></label>
+          <button type="button" class="btn ghost" data-act="set-limit">Kaydet</button>
+          <button type="button" class="btn ghost" data-act="toggle-voting">${expo.open ? "Oylamayı kapat" : "Oylamayı aç"}</button>
           <button type="button" class="btn ghost" data-act="expo-csv">Seçilenleri CSV indir</button>` : ""}
       </div>
       <div class="chips">${chip("all", "Hepsi")}${chip("mine", "Oy verdiklerim")}${chip("secildi", "Sergide")}${isAdmin() ? chip("aday", "Adaylar") : ""}</div>
       ${list.length ? `<div class="expo-grid">${list.map(card).join("")}</div>`
-        : `<p class="muted">${expoPhotos().length ? "Bu filtreye uyan fotoğraf yok." : "Henüz sergi izni verilmiş fotoğraf yok. Fotoğraf eklerken “sergide gösterilmesine izin veriyorum” kutusunu işaretleyin."}</p>`}
+        : `<p class="muted">${expoPhotos().length ? "Bu filtreye uyan fotoğraf yok." : "Henüz fotoğraf yok."}</p>`}
     </div>`;
 }
 async function onExpoClick(e) {
@@ -675,6 +682,10 @@ async function onExpoClick(e) {
     } else if (act === "flag") {
       const cur = expoPhotos().find((x) => x.id === id)?.exhibit;
       await api.setExhibit(id, cur === el.dataset.v ? null : el.dataset.v); await refreshExpo();
+    } else if (act === "set-limit") {
+      const n = parseInt($("#expo-limit").value, 10);
+      if (!(n >= 1 && n <= 100)) return toast("Oy hakkı 1-100 arasında olmalı.", true);
+      await api.setVoteLimit(n); await refreshExpo(); toast("Oy hakkı güncellendi");
     } else if (act === "toggle-voting") {
       await api.setVoting(!expo.open); await refreshExpo(); toast(expo.open ? "Oylama açıldı" : "Oylama kapatıldı");
     } else if (act === "expo-csv") exportExpoCsv();
@@ -824,7 +835,12 @@ function bind() {
   // Otomatik yenileme: form pencereleri (yazarken) ve seçili fotoğraf varken durur; sayfa görünürken 10 sn'de bir.
   // Detay penceresi açıkken de yenilenir; böylece yeni katılımcılar anında görünür.
   const busy = () => $$("dialog[open]").some((d) => d.id !== "dlg-detail") || !!$("#detail input[type=file]")?.files?.length || !!$("#comment-body")?.value;
-  const refresh = () => { if (!document.hidden && !busy()) reload(false, true); };
+  const refresh = () => {
+    if (document.hidden) return;
+    // Sergi butonu, oylama açılıp kapanınca yönetici dışındakilere görünür/gizlenir
+    if (api.ext2) api.votingInfo().then((vi) => { if (vi.open !== expo.open) { expo.open = vi.open; updateExpoUi(); } expo.limit = vi.limit; });
+    if (!busy()) reload(false, true);
+  };
   document.addEventListener("visibilitychange", refresh);
   window.addEventListener("focus", refresh);
   window.addEventListener("online", refresh);
@@ -837,7 +853,8 @@ function bind() {
   updateAdminUi();
   initMap(); bind();
   const info = await api.init(); state.codeRequired = info.codeRequired;
-  if (api.ext2) expo.open = await api.votingOpen();
+  if (api.ext2) { const vi = await api.votingInfo(); expo.open = vi.open; expo.limit = vi.limit; }
+  updateExpoUi();
   if (isAdmin() && !(await api.checkAdmin(identity.admin()).catch(() => true))) { identity.setAdmin(""); updateAdminUi(); }
   await reload(true);
   const m = location.hash.match(/^#yer=([0-9a-f-]{36})$/i);

@@ -12,7 +12,7 @@ Statik site (GitHub Pages) + Supabase (Postgres + Storage). Giriş yok.
 - Filtre: kategori, durum, tarih, arama, "Katıldıklarım", "Eklediklerim"; CSV dışa aktarma ve tüm veriyi JSON yedek olarak indirme (Yedek)
 - Yeni yer eklerken yakında/benzer adlı kayıt varsa uyarı
 - Yönetici modunda **Toplu işlem**: seçilen kayıtları toplu sil / "Çekildi" / "İptal" yap
-- **Sergi**: her fotoğrafta çeken kişinin adı ve sergi izni; "Sergi" penceresinde gizli oylama (oy veren kaydedilmez, cihaz başına 10 oy), yönetici oylamayı açıp kapatır, fotoğrafları Aday/Seçildi işaretler ve seçilenleri CSV indirir. Oy sayılarını yönetici her zaman, diğerleri oylama kapanınca görür
+- **Sergi** (yönetici modunda; oylama açılınca herkese görünür): gizli oylama (oy veren kaydedilmez, oy hakkını yönetici belirler, kişi kendi yerinin fotoğrafına oy veremez, oylama sürerken çeken kişi ve yer gizli, sıra rastgele), yönetici oylamayı açıp kapatır, Aday/Seçildi işaretler ve seçilenleri CSV indirir. Oy sayılarını yönetici her zaman, diğerleri oylama kapanınca görür
 - Düzenleme/silme yalnızca kaydı ekleyen cihazdan (cihaz anahtarı)
 - İsteğe bağlı ortak davet kodu (bot ve istenmeyen ekleme koruması)
 - Mobil öncelikli, Türkçe arayüz
