@@ -118,6 +118,12 @@ exception when duplicate_object then null; end $$;
 update public.place_photos set consent = true where not consent;
 alter table public.place_photos alter column consent set default true;
 
+-- Fotoğrafı yükleyen cihaz: herkes her yere fotoğraf ekleyebilir; yükleyen kendi fotoğrafını siler.
+-- Eski fotoğraflar (yalnızca yer sahibi ekleyebiliyordu) yer sahibine atanır.
+alter table public.place_photos add column if not exists edit_token_hash text;
+update public.place_photos ph set edit_token_hash = pl.edit_token_hash
+  from public.places pl where pl.id = ph.place_id and ph.edit_token_hash is null;
+
 -- Gizli oylama: kim oy verdiği saklanmaz. voter_hash cihaz anahtarının AYRI bir özetidir
 -- (yer/katılım kayıtlarındaki edit_token_hash ile eşleştirilemez). Tabloya hiçbir rol doğrudan erişemez.
 create table if not exists public.photo_votes (
@@ -362,26 +368,30 @@ begin
 end $$;
 
 drop function if exists public.add_photo(text, uuid, text, text);
+drop function if exists public.add_photo(text, uuid, text, text, text, boolean);
+-- Herkes her merdivene fotoğraf ekleyebilir (çekimden sonra). Sınırlar: kişi başına yer başına 10,
+-- yer başına 200 fotoğraf, dakikada toplam 40 yükleme. p_admin/p_consent geriye dönük uyumluluk için duruyor.
 create or replace function public.add_photo(
   p_token text, p_place_id uuid, p_path text, p_admin text default null,
-  p_photographer text default null, p_consent boolean default false
+  p_photographer text default null, p_consent boolean default false, p_code text default null
 ) returns uuid language plpgsql security definer
 set search_path = public, extensions
 as $$
 declare v_id uuid;
 begin
+  perform public._check_code(p_code);
   perform public._check_token(p_token);
-  if not exists (select 1 from public.places
-                 where id = p_place_id
-                   and (edit_token_hash = public._hash(p_token) or public._is_admin(p_admin))) then
-    raise exception 'YETKISIZ';
-  end if;
+  if not exists (select 1 from public.places where id = p_place_id) then raise exception 'YER_YOK'; end if;
   if p_path not like p_place_id::text || '/%' then raise exception 'GECERSIZ_YOL'; end if;
-  if (select count(*) from public.place_photos where place_id = p_place_id) >= 5 then
+  if (select count(*) from public.place_photos where created_at > now() - interval '1 minute') >= 40 then
+    raise exception 'COK_FAZLA_ISTEK';
+  end if;
+  if (select count(*) from public.place_photos where place_id = p_place_id and edit_token_hash = public._hash(p_token)) >= 10
+     or (select count(*) from public.place_photos where place_id = p_place_id) >= 200 then
     raise exception 'FOTOGRAF_LIMITI';
   end if;
-  insert into public.place_photos (place_id, path, photographer, consent)
-  values (p_place_id, p_path, nullif(btrim(p_photographer), ''), true) returning id into v_id;
+  insert into public.place_photos (place_id, path, photographer, consent, edit_token_hash)
+  values (p_place_id, p_path, nullif(btrim(p_photographer), ''), true, public._hash(p_token)) returning id into v_id;
   return v_id;
 end $$;
 
@@ -393,7 +403,7 @@ begin
   perform public._check_token(p_token);
   delete from public.place_photos ph using public.places pl
    where ph.id = p_photo_id and pl.id = ph.place_id
-     and (pl.edit_token_hash = public._hash(p_token) or public._is_admin(p_admin));
+     and (ph.edit_token_hash = public._hash(p_token) or pl.edit_token_hash = public._hash(p_token) or public._is_admin(p_admin));
   if not found then raise exception 'YETKISIZ'; end if;
 end $$;
 
@@ -573,7 +583,7 @@ begin
     if not exists (select 1 from public.place_photos where id = p_photo_id) then raise exception 'FOTOGRAF_YOK'; end if;
     -- Karşılaştırma anlıktır; oy ile kişi arasında hiçbir bağlantı saklanmaz.
     if exists (select 1 from public.place_photos ph join public.places pl on pl.id = ph.place_id
-               where ph.id = p_photo_id and pl.edit_token_hash = public._hash(p_token)) then
+               where ph.id = p_photo_id and coalesce(ph.edit_token_hash, pl.edit_token_hash) = public._hash(p_token)) then
       raise exception 'KENDI_FOTOGRAF';
     end if;
     if (select count(*) from public.photo_votes where voter_hash = v) >= public._vote_limit()
@@ -628,7 +638,7 @@ grant execute on function
   public.add_comment(text, text, uuid, text, text),
   public.delete_comment(text, uuid, text),
   public.delete_place(text, uuid, text),
-  public.add_photo(text, uuid, text, text, text, boolean),
+  public.add_photo(text, uuid, text, text, text, boolean, text),
   public.voting_status(), public.voting_info(), public.set_voting(text, boolean), public.set_vote_limit(text, integer), public.vote_photo(text, text, uuid, boolean),
   public.my_votes(text), public.vote_counts(text), public.set_photo_exhibit(text, uuid, text),
   public.delete_photo(text, uuid, text),
@@ -660,7 +670,9 @@ drop policy if exists "photos_delete_orphans" on storage.objects;
 create policy "photos_delete_orphans" on storage.objects for delete to anon, authenticated
   using (
     bucket_id = 'place-photos'
-    and not exists (select 1 from public.place_photos ph where ph.path = objects.name)
+    -- küçük önizleme dosyaları (<ad>_t.jpg) ana fotoğrafa bağlı sayılır
+    and not exists (select 1 from public.place_photos ph
+                    where ph.path = objects.name or ph.path = regexp_replace(objects.name, '_t\.jpg$', '.jpg'))
   );
 
 -- Davet kodunu ayarlamak için (örnek, kendi kodunuzla çalıştırın):

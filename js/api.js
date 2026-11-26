@@ -31,6 +31,9 @@ export const identity = {
   setProfile(p) { LS.set("st_profile", p); },
 };
 
+// Küçük önizleme dosyası: özgün fotoğrafın yanında "<ad>_t.jpg" olarak saklanır (listelerde veri tasarrufu).
+const thumbPath = (path) => path.replace(/\.jpg$/, "_t.jpg");
+
 // Kategori tablosu henüz kurulmadıysa (schema.sql çalıştırılmadıysa) kullanılan sabit liste.
 export const DEFAULT_CATS = [
   { id: "dis_mekan", name: "Dış mekan", parent_id: null, color: "#d9641e", sort: 1 },
@@ -48,7 +51,7 @@ const ERRORS = {
   GECERSIZ_ANAHTAR: "Cihaz anahtarı geçersiz, sayfayı yenileyin.",
   KONTENJAN_DOLU: "Bu çekimin kontenjanı dolu.",
   ZATEN_KATILIYOR: "Bu isimle zaten katılım kaydı var.",
-  FOTOGRAF_LIMITI: "Bir yere en fazla 5 fotoğraf eklenebilir.",
+  FOTOGRAF_LIMITI: "Bir merdivene en fazla 10 fotoğraf ekleyebilirsiniz.",
   YER_YOK: "Bu yer artık yok.",
   OYLAMA_KAPALI: "Oylama şu an kapalı.",
   OY_LIMITI: "Oy hakkınızı doldurdunuz. Yeni oy için önce bir oyunuzu geri alın.",
@@ -102,7 +105,7 @@ const remote = {
   listPlaces() {
     const sel = "id,name,category,lat,lng,district,address,planned_date,notes,status,max_attendees,author_name,created_at," +
       (this.ext ? "meet_time,meet_point,info,place_comments(id,author_name,body,created_at)," : "") +
-      `place_photos(id,path${this.ext2 ? ",photographer,consent,exhibit" : ""}),attendees(id,first_name,last_name,created_at)`;
+      `place_photos(id,path,created_at${this.ext2 ? ",photographer,consent,exhibit" : ""}),attendees(id,first_name,last_name,created_at)`;
     return this.request("/rest/v1/places?select=" + encodeURIComponent(sel) + "&order=planned_date.asc.nullslast,created_at.asc");
   },
   async addPlace(d, code) {
@@ -144,6 +147,7 @@ const remote = {
   // Veritabanı kaydı silindikten sonra dosyalar yetim kalır; yetim dosyaları Storage API ile sileriz (en iyi çaba).
   async removeFiles(paths) {
     if (!paths.length) return;
+    paths = paths.flatMap((p) => [p, thumbPath(p)]); // küçük önizleme dosyası da silinir
     try {
       await this.request("/storage/v1/object/place-photos", {
         method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prefixes: paths }),
@@ -178,15 +182,23 @@ const remote = {
     identity.removeMine("places", id);
     await this.removeFiles(paths);
   },
+  // Herkes her merdivene fotoğraf ekleyebilir. meta: { photographer, code, thumb (küçük önizleme blob'u) }
   async addPhoto(placeId, blob, meta = {}) {
     const path = `${placeId}/${uuid()}.jpg`;
-    await this.request(`/storage/v1/object/place-photos/${path}`, {
-      method: "POST", headers: { "Content-Type": blob.type || "image/jpeg", "x-upsert": "false" }, body: blob,
+    const put = (p, b) => this.request(`/storage/v1/object/place-photos/${p}`, {
+      method: "POST", headers: { "Content-Type": b.type || "image/jpeg", "x-upsert": "false" }, body: b,
     });
-    await this.rpc("add_photo", {
-      p_token: identity.token(), p_place_id: placeId, p_path: path, p_admin: identity.admin() || null,
-      ...(this.ext2 ? { p_photographer: meta.photographer || null, p_consent: true } : {}),
-    });
+    await put(path, blob);
+    if (meta.thumb) await put(thumbPath(path), meta.thumb).catch(() => {}); // önizleme yoksa liste özgün fotoğrafa döner
+    try {
+      const id = await this.rpc("add_photo", {
+        p_token: identity.token(), p_place_id: placeId, p_path: path, p_admin: identity.admin() || null,
+        ...(this.ext2 ? { p_photographer: meta.photographer || null, p_consent: true } : {}),
+        ...(meta.code ? { p_code: meta.code } : {}),
+      });
+      if (id) identity.addMine("photos", id);
+      return id;
+    } catch (e) { await this.removeFiles([path]); throw e; } // kayıt reddedilirse yüklenen dosyalar temizlenir
   },
   // ---- Sergi oylaması (gizli oy: sunucu oy verenin kimliğini saklamaz)
   votingInfo: () => remote.rpc("voting_info", {}).then((v) => ({ open: !!v?.open, limit: v?.limit || 10 }), () => ({ open: false, limit: 10 })),
@@ -218,6 +230,7 @@ const remote = {
     identity.removeMine("attendees", id);
   },
   photoUrl: (path) => `${cfg.SUPABASE_URL}/storage/v1/object/public/place-photos/${path}`,
+  thumbUrl: (path) => `${cfg.SUPABASE_URL}/storage/v1/object/public/place-photos/${thumbPath(path)}`,
 };
 
 // ======================================================= Demo (localStorage)
@@ -307,10 +320,11 @@ const demo = {
   },
   async addPhoto(placeId, blob, meta = {}) {
     const db = this.db();
-    if (db.photos.filter((x) => x.place_id === placeId).length >= 5) throw friendly("FOTOGRAF_LIMITI");
+    if (db.photos.filter((x) => x.place_id === placeId && identity.mine("photos").has(x.id)).length >= 10) throw friendly("FOTOGRAF_LIMITI");
     const dataUrl = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
-    db.photos.push({ id: uuid(), place_id: placeId, path: dataUrl, photographer: meta.photographer || null, consent: !!meta.consent, exhibit: null });
-    this.save(db);
+    const id = uuid();
+    db.photos.push({ id, place_id: placeId, path: dataUrl, photographer: meta.photographer || null, consent: true, exhibit: null, created_at: new Date().toISOString() });
+    this.save(db); identity.addMine("photos", id); return id;
   },
   // Demo: tek kullanıcı; oylama her zaman açık, sonuçlar yalnızca oylama kapalıyken görünürdü (demoda gizli).
   async votingInfo() { return { open: true, limit: 10 }; },
@@ -342,6 +356,7 @@ const demo = {
     this.save(db); identity.removeMine("attendees", id);
   },
   photoUrl: (path) => path,
+  thumbUrl: (path) => path,
 };
 
 const impl = isDemo ? demo : remote;
@@ -376,6 +391,7 @@ export const api = {
   addAttendee: (pid, f, l, code) => impl.addAttendee(pid, f, l, code),
   removeAttendee: (id) => impl.removeAttendee(id),
   photoUrl: (p) => impl.photoUrl(p),
+  thumbUrl: (p) => impl.thumbUrl(p),
 };
 
 // ---- Fotoğraf küçültme (1200 px, JPEG)

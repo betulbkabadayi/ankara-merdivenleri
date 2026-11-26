@@ -358,3 +358,28 @@ input[type=color] { padding: 2px 4px; min-height: 40px; cursor: pointer; }
 .cat-row.sub { margin-left: 22px; background: #f8fafb; }
 .cat-row .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; font-size: 14px; }
 .cat-row .btn.small { padding: 3px 9px; min-height: 32px; font-size: 13px; }
+
+/* Fotoğraflar galerisi, fotoğraf ekleme bölümü */
+#gallery { display: flex; flex-direction: column; min-width: 0; max-height: calc(100dvh - 20px); }
+dialog#dlg-gallery { width: min(980px, calc(100vw - 20px)); }
+@media (max-width: 800px) { #gallery { max-height: calc(var(--app-h, 100dvh) - 16px); } }
+.gal-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; align-items: center; }
+.gal-filters select { width: 100%; }
+.gal-filters .check { white-space: normal; min-height: 40px; }
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.pcard { margin: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
+.pcard img { width: 100%; height: 150px; object-fit: cover; display: block; background: #eee; cursor: zoom-in; }
+.pcard figcaption { padding: 6px 8px 8px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.linkbtn { border: 0; background: none; padding: 0; text-align: left; font-weight: 700; font-size: 13px; color: var(--ink); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+@media (max-width: 720px) { .pgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } .pcard img { height: 120px; } }
+.add-photos { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.add-photos p { margin: 0; }
+/* Üst çubuk: dar ekranda galeri düğmesi yalnızca simge */
+.top-actions { gap: 6px; }
+@media (max-width: 480px) {
+  #btn-gallery .lbl { display: none; }
+  .top-actions .btn { padding: 8px 10px; }
+  .brand h1 { font-size: 15px; }
+}
+/* Dokunmatik: önizleme/silme çarpısı büyük ve kolay vurulur */
+@media (pointer: coarse) { .thumb button { width: 36px; height: 36px; font-size: 20px; top: 2px; right: 2px; } }

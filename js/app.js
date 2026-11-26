@@ -1,4 +1,4 @@
-import { api, identity, isDemo, resizeImage, searchAddress, DEFAULT_CATS } from "./api.js?v=18";
+import { api, identity, isDemo, resizeImage, searchAddress, DEFAULT_CATS } from "./api.js?v=19";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -7,7 +7,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const STATUS = { onerildi: "Önerildi", cekildi: "Çekildi", iptal: "İptal" };
 const ANKARA = { lat: 39.9208, lng: 32.8541 };
 const BOUNDS = { latMin: 39.0, latMax: 40.8, lngMin: 31.0, lngMax: 34.0 };
-const MAX_PHOTOS = 5;
+const MAX_PHOTOS = 10; // bir kişinin bir merdivene ekleyebileceği fotoğraf sayısı
 
 const state = { places: [], cats: DEFAULT_CATS.map((c) => ({ ...c })), codeRequired: false, cat: "", q: "", status: "aktif", when: "", mine: false, mineP: false, view: "list", detailId: null, bulk: false, sel: new Set() };
 
@@ -26,6 +26,9 @@ const catColor = (id) => { const c = catById(id); return safeColor(c?.color) || 
 // Seçili kategori bir ana kategoriyse altkategorilerindeki yerler de dahil edilir.
 const inCat = (p, sel) => !sel || p.category === sel || catById(p.category)?.parent_id === sel;
 const canEditCat = (c) => isAdmin() || identity.mine("categories").has(c.id);
+const myPhotoIds = () => identity.mine("photos");
+// Fotoğrafı yükleyen, yerin sahibi ya da yönetici silebilir (sunucu da aynısını denetler).
+const canDeletePhoto = (ph, p) => isAdmin() || myPhotoIds().has(ph.id) || identity.mine("places").has(p.id);
 
 // ------------------------------------------------------------------ yardımcılar
 const pad = (n) => String(n).padStart(2, "0");
@@ -305,12 +308,13 @@ function ensurePickMap() {
 
 function renderPreviews() {
   const box = $("#photo-previews");
+  box.querySelectorAll("img").forEach((i) => URL.revokeObjectURL(i.src));
   box.innerHTML = "";
   pendingFiles.forEach((f, i) => {
     const d = document.createElement("div"); d.className = "thumb";
     const img = document.createElement("img"); img.src = URL.createObjectURL(f); img.alt = f.name;
     const b = document.createElement("button"); b.type = "button"; b.textContent = "×"; b.setAttribute("aria-label", "Fotoğrafı kaldır");
-    b.onclick = () => { pendingFiles.splice(i, 1); renderPreviews(); };
+    b.addEventListener("click", (ev) => { ev.preventDefault(); ev.stopPropagation(); pendingFiles.splice(i, 1); renderPreviews(); });
     d.append(img, b); box.append(d);
   });
 }
@@ -400,7 +404,8 @@ async function submitPlace(e) {
     for (let i = 0; i < pendingFiles.length; i++) {
       btn.textContent = `Fotoğraf ${i + 1}/${pendingFiles.length}…`;
       try {
-        await api.addPhoto(id, await resizeImage(pendingFiles[i]), { photographer: d.author });
+        const thumb = await resizeImage(pendingFiles[i], 480, 0.7).catch(() => null);
+        await api.addPhoto(id, await resizeImage(pendingFiles[i]), { photographer: d.author, code, thumb });
       } catch (err) { failed++; console.warn(err); }
     }
     $("#dlg-place").close();
@@ -424,17 +429,18 @@ function renderDetail(id) {
   const n = p.attendees.length;
   const full = p.max_attendees && n >= p.max_attendees;
   const joined = p.attendees.some((a) => myAtt.has(a.id)); // bu cihazdan zaten katılım var
+  const myCount = p.place_photos.filter((ph) => myPhotoIds().has(ph.id)).length, canAdd = myCount < MAX_PHOTOS;
   const photos = p.place_photos.map((ph) => {
     const url = api.photoUrl(ph.path);
-    const img = `<img src="${esc(url)}" alt="${esc(p.name)} fotoğrafı" title="${esc(ph.photographer && !hideNames() ? "Fotoğraf: " + ph.photographer : "")}" data-zoom="${esc(url)}" loading="lazy">`;
+    const img = `<img src="${esc(api.thumbUrl(ph.path))}" onerror="this.onerror=null;this.src=this.dataset.zoom" alt="${esc(p.name)} fotoğrafı" title="${esc(ph.photographer && !hideNames() ? "Fotoğraf: " + ph.photographer : "")}" data-zoom="${esc(url)}" loading="lazy">`;
     return `<div class="thumb">${img}
-      ${mineP ? `<button type="button" data-act="del-photo" data-id="${esc(ph.id)}" aria-label="Fotoğrafı sil">×</button>` : ""}</div>`;
+      ${canDeletePhoto(ph, p) ? `<button type="button" data-act="del-photo" data-id="${esc(ph.id)}" aria-label="Fotoğrafı sil">×</button>` : ""}</div>`;
   }).join("");
   const people = p.attendees.map((a) =>
     `<li class="${myAtt.has(a.id) ? "me" : ""}">${esc(fullName(a))}${(myAtt.has(a.id) || isAdmin()) ? `<button type="button" data-act="leave" data-id="${esc(a.id)}" title="Katılımdan vazgeç" aria-label="Katılımdan vazgeç">×</button>` : ""}</li>`).join("");
   const dir = dirUrl(p);
   const meet = [hhmm(p.meet_time), p.meet_point].filter(Boolean).join(" · ");
-  const draft = { body: $("#comment-body")?.value || "", name: $("#comment-name")?.value, consent: !!$("#photo-consent")?.checked };
+  const draft = { body: $("#comment-body")?.value || "", name: $("#comment-name")?.value, by: $("#photo-by")?.value, consent: !!$("#photo-consent")?.checked };
   const myCom = identity.mine("comments");
   const comments = (p.place_comments || []).slice().sort((a, b) => a.created_at.localeCompare(b.created_at));
   const commentsHtml = !api.ext ? "" : `
@@ -468,8 +474,12 @@ function renderDetail(id) {
       </div>
       <div class="section-title">Katılacaklar (${n}${p.max_attendees ? "/" + p.max_attendees : ""})</div>
       ${n ? `<ul class="people">${people}</ul>` : `<p class="muted">Henüz kimse katılmadı.</p>`}
-      ${mineP && p.place_photos.length < MAX_PHOTOS ? `<label class="check consent"><input id="photo-consent" type="checkbox" ${draft.consent ? "checked" : ""}> Fotoğraflarımın sergide ve sergi oylamasında gösterilmesine izin veriyorum <small class="muted">(zorunlu)</small></label>
-        <label>Fotoğraf ekle <small class="muted">(en fazla ${MAX_PHOTOS})</small><input type="file" accept="image/*" multiple data-act="add-photos"></label>` : ""}
+      ${canAdd ? `<div class="add-photos">
+        <div class="section-title">Çekimden fotoğraf ekle</div>
+        <p class="muted"><small>Bu merdivende çektiğiniz fotoğrafları ekleyin; herkes ekleyebilir. Bir merdivene en fazla ${MAX_PHOTOS} fotoğraf ekleyebilirsiniz (şu an ${myCount}).</small></p>
+        <label>Fotoğrafı çeken <input id="photo-by" maxlength="60" placeholder="Ad Soyad" value="${esc(draft.by ?? profileName())}"></label>
+        <label class="check consent"><input id="photo-consent" type="checkbox" ${draft.consent ? "checked" : ""}> Fotoğraflarımın sergide ve sergi oylamasında gösterilmesine izin veriyorum <small class="muted">(zorunlu)</small></label>
+        <label>Fotoğraf seç <input type="file" accept="image/*" multiple data-act="add-photos"></label></div>` : ""}
       ${commentsHtml}
       ${mineP ? "" : `<p class="muted"><small>Düzenleme ve silme yalnızca kaydı ekleyen cihazdan veya yönetici modundan yapılabilir.</small></p>`}
       <p id="detail-error" class="form-error" role="alert" hidden></p>
@@ -527,20 +537,29 @@ async function onDetailClick(e) {
       } catch (x) { showError($("#detail-error"), x.message); }
     });
     else if (act === "leave") { await api.removeAttendee(el.dataset.id); toast("Katılım kaldırıldı"); await reload(); }
-    else if (act === "del-photo") armed(el, "?", async () => {
-      try { await api.deletePhoto(el.dataset.id); await reload(); } catch (x) { showError($("#detail-error"), x.message); }
-    });
+    else if (act === "del-photo") { await api.deletePhoto(el.dataset.id); await reload(); } // ilk dokunuşta silinir
   } catch (x) { showError(err, x.message); }
 }
 
 async function onDetailChange(e) {
   if (e.target.dataset.act !== "add-photos") return;
-  if (!$("#photo-consent")?.checked) { e.target.value = ""; return showError($("#detail-error"), "Fotoğraf eklemek için sergide gösterilmesine izin vermeniz gerekiyor. Önce kutuyu işaretleyin."); }
+  const err = $("#detail-error"), name = ($("#photo-by")?.value || "").trim();
+  if (name.length < 2) { e.target.value = ""; return showError(err, "Fotoğrafı çeken kişinin adını yazın."); }
+  if (!$("#photo-consent")?.checked) { e.target.value = ""; return showError(err, "Fotoğraf eklemek için sergide gösterilmesine izin vermeniz gerekiyor. Önce kutuyu işaretleyin."); }
   const id = state.detailId, p = state.places.find((x) => x.id === id);
-  const files = [...e.target.files].slice(0, MAX_PHOTOS - p.place_photos.length);
-  const meta = { photographer: profileName() }; // fotoğraf, yükleyenin adıyla kaydedilir
+  const mineCount = p.place_photos.filter((ph) => myPhotoIds().has(ph.id)).length;
+  const files = [...e.target.files].slice(0, Math.max(0, MAX_PHOTOS - mineCount));
+  if (!files.length) { e.target.value = ""; return showError(err, "Bir merdivene en fazla " + MAX_PHOTOS + " fotoğraf ekleyebilirsiniz."); }
+  const code = await ensureCode(); if (code === null) { e.target.value = ""; return; }
+  identity.setProfile({ ...identity.profile(), author: name });
+  toast(`${files.length} fotoğraf yükleniyor…`);
   let failed = 0;
-  for (const f of files) { try { await api.addPhoto(id, await resizeImage(f), meta); } catch (x) { failed++; showError($("#detail-error"), x.message); } }
+  for (const f of files) {
+    try {
+      const blob = await resizeImage(f), thumb = await resizeImage(f, 480, 0.7).catch(() => null);
+      await api.addPhoto(id, blob, { photographer: name, code, thumb });
+    } catch (x) { failed++; showError($("#detail-error"), x.message); }
+  }
   await reload();
   if (!failed) toast("Fotoğraf eklendi");
 }
@@ -741,6 +760,60 @@ async function onCatsClick(e) {
   } catch (x) { showError($("#cat-error"), x.message); }
 }
 
+// ------------------------------------------------------------------ fotoğraflar galerisi (tüm fotoğraflar, filtreli)
+const gal = { cat: "", place: "", by: "", mine: false, sort: "new", limit: 48 };
+const allPhotos = () => state.places.flatMap((p) => (p.place_photos || []).map((ph) => ({ ...ph, place: p })));
+
+async function openGallery() {
+  gal.limit = 48;
+  $("#gallery").innerHTML = `<header class="dlg-head"><h2>Fotoğraflar</h2><button type="button" class="x" data-close aria-label="Kapat">×</button></header><div class="dlg-body"><p class="muted">Yükleniyor…</p></div>`;
+  $("#dlg-gallery").showModal();
+  await reload(false, true);
+  if (api.ext2) { const vi = await api.votingInfo(); expo.open = vi.open; updateExpoUi(); }
+  renderGallery();
+}
+
+function renderGallery() {
+  const blind = hideNames(); // oylama sürerken fotoğrafı çeken kişi gösterilmez ve ona göre filtrelenemez
+  const all = allPhotos(), mine = myPhotoIds();
+  const placesWith = [...new Map(all.map((x) => [x.place.id, x.place])).values()].sort((a, b) => a.name.localeCompare(b.name, "tr"));
+  const people = blind ? [] : [...new Set(all.map((x) => x.photographer).filter(Boolean))].sort((a, b) => a.localeCompare(b, "tr"));
+  if (gal.place && !placesWith.some((p) => p.id === gal.place)) gal.place = "";
+  if (gal.by && !people.includes(gal.by)) gal.by = "";
+  const ts = (x) => x.created_at || "";
+  const list = all.filter((x) => inCat(x.place, gal.cat) && (!gal.place || x.place.id === gal.place) && (!gal.by || x.photographer === gal.by) && (!gal.mine || mine.has(x.id)));
+  list.sort(gal.sort === "old" ? (a, b) => ts(a).localeCompare(ts(b))
+    : gal.sort === "place" ? (a, b) => a.place.name.localeCompare(b.place.name, "tr") || ts(b).localeCompare(ts(a))
+    : (a, b) => ts(b).localeCompare(ts(a)));
+  const shown = list.slice(0, gal.limit);
+  const catOpts = []; for (const r of catRoots()) catOpts.push(r, ...catChildren(r.id));
+  const option = (v, label, cur) => `<option value="${esc(v)}"${cur === v ? " selected" : ""}>${esc(label)}</option>`;
+  const card = (x) => `<figure class="pcard">
+      <img src="${esc(api.thumbUrl(x.path))}" onerror="this.onerror=null;this.src=this.dataset.zoom" data-zoom="${esc(api.photoUrl(x.path))}" alt="${esc(x.place.name)} fotoğrafı" loading="lazy">
+      <figcaption>
+        <button type="button" class="linkbtn" data-act="gal-place" data-id="${esc(x.place.id)}">${esc(x.place.name)}</button>
+        <span class="muted">${esc(catLabel(x.place.category))}</span>
+        ${blind || !x.photographer ? "" : `<span>📷 ${esc(x.photographer)}</span>`}
+        ${x.created_at ? `<span class="muted">${esc(fmtShort(x.created_at.slice(0, 10)))}</span>` : ""}
+      </figcaption></figure>`;
+  const sc = $("#gallery .dlg-body")?.scrollTop || 0;
+  $("#gallery").innerHTML = `
+    <header class="dlg-head"><h2>Fotoğraflar</h2><button type="button" class="x" data-close aria-label="Kapat">×</button></header>
+    <div class="dlg-body">
+      <div class="gal-filters">
+        <select data-gf="cat" aria-label="Kategori"><option value="">Tüm kategoriler</option>${catOpts.map((c) => option(c.id, catLabel(c.id), gal.cat)).join("")}</select>
+        <select data-gf="place" aria-label="Merdiven"><option value="">Tüm merdivenler</option>${placesWith.map((p) => option(p.id, p.name, gal.place)).join("")}</select>
+        ${blind ? "" : `<select data-gf="by" aria-label="Fotoğrafı çeken"><option value="">Tüm fotoğrafçılar</option>${people.map((n) => option(n, n, gal.by)).join("")}</select>`}
+        <select data-gf="sort" aria-label="Sıralama">${option("new", "Yeniden eskiye", gal.sort)}${option("old", "Eskiden yeniye", gal.sort)}${option("place", "Merdivene göre", gal.sort)}</select>
+        <label class="check"><input type="checkbox" data-gf="mine" ${gal.mine ? "checked" : ""}> Benim fotoğraflarım</label>
+      </div>
+      <div class="count">${list.length} fotoğraf${all.length !== list.length ? ` (toplam ${all.length})` : ""}</div>
+      ${shown.length ? `<div class="pgrid">${shown.map(card).join("")}</div>` : `<p class="muted">${all.length ? "Filtreye uyan fotoğraf yok." : "Henüz fotoğraf eklenmemiş. Bir merdivenin sayfasından çektiğiniz fotoğrafları ekleyebilirsiniz."}</p>`}
+      ${list.length > shown.length ? `<button type="button" class="btn ghost" data-act="gal-more">Daha fazla göster (${list.length - shown.length})</button>` : ""}
+    </div>`;
+  $("#gallery .dlg-body").scrollTop = sc;
+}
+
 // ------------------------------------------------------------------ fotoğraf önizleme (aynı sayfada)
 let lbList = [], lbIdx = 0;
 function showLb() {
@@ -751,7 +824,7 @@ function showLb() {
 }
 function lbStep(d) { lbIdx = (lbIdx + d + lbList.length) % lbList.length; showLb(); }
 function openLightbox(img) {
-  const scope = img.closest(".gallery, .expo-grid") || img.parentElement;
+  const scope = img.closest(".gallery, .expo-grid, .pgrid") || img.parentElement;
   lbList = [...scope.querySelectorAll("img[data-zoom]")].map((i) => ({ src: i.dataset.zoom, alt: i.alt }));
   lbIdx = Math.max(0, lbList.findIndex((x) => x.src === img.dataset.zoom));
   showLb(); $("#dlg-lightbox").showModal();
@@ -766,8 +839,8 @@ const hideNames = () => expo.open && !isAdmin();
 const updateExpoUi = () => { $("#btn-expo").hidden = !(api.ext2 && (isAdmin() || expo.open)); };
 // Kendi eklediği yerin fotoğrafları oylamada kişiye gösterilmez (yönetici hariç).
 const expoPhotos = () => {
-  const mine = identity.mine("places");
-  return state.places.filter((p) => isAdmin() || !mine.has(p.id)).flatMap((p) => p.place_photos.map((ph) => ({ ...ph, place: p })));
+  const mine = myPhotoIds(); // kişinin kendi yüklediği fotoğraflar oylamada gösterilmez (yönetici hariç)
+  return state.places.flatMap((p) => p.place_photos.filter((ph) => isAdmin() || !mine.has(ph.id)).map((ph) => ({ ...ph, place: p })));
 };
 const seedOf = (s) => { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; };
 
@@ -795,7 +868,7 @@ function renderExpo() {
   const left = expo.limit - expo.mine.size;
   const chip = (k, label) => `<button type="button" class="chip ${F === k ? "active" : ""}" data-f="${k}">${label}</button>`;
   const card = (x) => {
-    const url = api.photoUrl(x.path), img = `<img src="${esc(url)}" alt="${hideNames() ? "Sergi fotoğrafı" : esc(x.place.name)}" data-zoom="${esc(url)}" loading="lazy">`;
+    const url = api.photoUrl(x.path), img = `<img src="${esc(api.thumbUrl(x.path))}" onerror="this.onerror=null;this.src=this.dataset.zoom" alt="${hideNames() ? "Sergi fotoğrafı" : esc(x.place.name)}" data-zoom="${esc(url)}" loading="lazy">`;
     const voted = expo.mine.has(x.id);
     return `<div class="ph ${esc(x.exhibit || "")}">
       ${img}
@@ -930,6 +1003,16 @@ function bind() {
   $("#cat-chips").addEventListener("click", (e) => {
     const c = e.target.closest(".chip"); if (!c) return;
     state.cat = c.dataset.cat; renderCatChips(); render(true);
+  });
+  $("#btn-gallery").onclick = openGallery;
+  $("#gallery").addEventListener("change", (e) => {
+    const k = e.target.dataset.gf; if (!k) return;
+    gal[k] = k === "mine" ? e.target.checked : e.target.value; gal.limit = 48; renderGallery();
+  });
+  $("#gallery").addEventListener("click", (e) => {
+    const el = e.target.closest("[data-act]"); if (!el) return;
+    if (el.dataset.act === "gal-more") { gal.limit += 48; renderGallery(); }
+    else if (el.dataset.act === "gal-place") openDetail(el.dataset.id);
   });
   $("#btn-cats").onclick = openCats;
   $("#btn-cats-admin").onclick = openCats;

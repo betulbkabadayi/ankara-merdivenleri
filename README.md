@@ -6,6 +6,7 @@ Statik site (GitHub Pages) + Supabase (Postgres + Storage). Giriş yok.
 ## Özellikler
 - Yer önerisi: ad, kategori, haritada konum, önerilen çekim tarihi (zorunlu); ilçe, adres, not, kontenjan, fotoğraf (isteğe bağlı, en fazla 5)
 - Düzenlenebilir kategoriler (ana kategori › alt kategori, iki seviye, renkli): herkes yeni kategori ekler, kendi eklediğini düzenler/siler, yönetici hepsini; filtre ve harita pinleri kategori rengini kullanır
+- **Çekim fotoğrafları:** herkes çektiği merdivene fotoğraf ekler (kişi başına merdiven başına 10, çeken adı ve sergi izni zorunlu); fotoğrafı yükleyen, yerin sahibi ve yönetici siler. Üst çubuktaki **Fotoğraflar** düğmesi tüm fotoğrafları kategori / merdiven / fotoğrafçı filtreleriyle gösterir (listelerde küçük önizleme dosyaları kullanılır)
 - Herkes herkesin eklediği yerleri harita ve takvim görünümünde görür
 - Buluşma saati/noktası ve pratik bilgiler (ücret, çalışma saati, izin…), her yerin altında yorumlar
 - Detayda **Paylaş**, **Takvime ekle** (.ics ve Google Takvim); listede "Bu hafta" grubu, aynı güne düşen yerler için "Rotayı aç"
